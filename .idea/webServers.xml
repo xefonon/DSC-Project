@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="0d1eb07d-2aaf-4833-a66a-ae5f580897d4" name="hpc">
+        <fileTransfer rootFolder="/work3/xenoka" accessType="SFTP" host="transfer.gbar.dtu.dk" port="22" sshConfigId="f5fdbc83-9175-4387-9af7-293f27425695" sshConfig="xenoka@transfer.gbar.dtu.dk:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
