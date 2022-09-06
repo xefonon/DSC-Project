@@ -1,2 +1,8 @@
 
 ISM_sphere.npz
+
+__pycache__/
+
+*.iml
+
+*.xml
