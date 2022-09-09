@@ -552,11 +552,6 @@ def run_ISM(plot_array, plot_room, plot_rir,
             ):
     
     np.random.seed(lsf_number)
-    rir_sets = {}
-    array_data = []
-    reference_data = []
-    grids_sphere = []
-    grid_reference = []
     num_shbox = n_rooms
     maxX, maxY = max_xy
     for n in range(num_shbox):

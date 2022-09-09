@@ -361,7 +361,7 @@ def plot_sf(P, x, y, f=None, ax=None, name=None, save=False, add_meas=None,
         cbar = plt.colorbar(im, ax = ax, location=cbar_loc,
                             shrink=shrink)
         # cbar.ax.get_yaxis().labelpad = 15
-        titlesize = int(1. * mpl.rcParams['axes.titlesize'])
+        titlesize = mpl.rcParams['axes.titlesize']
         # cbar.ax.set_title(cbar_label, fontsize = titlesize)
         cbar.set_label(cbar_label, fontsize = titlesize)
     if add_meas is not None:
