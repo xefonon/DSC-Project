@@ -130,9 +130,9 @@ class DNN(nn.Module):
             # self.linears = nn.ModuleList([Siren(dim_in=layers[i],dim_out=layers[i + 1]) for i in range(len(layers) - 1)])
             self.net = SirenNet(
                             dim_in = layers[0],               # input dimension, ex. 2d coor
-                            dim_hidden = 256,                 # hidden dimension
+                            dim_hidden = 128,                 # hidden dimension
                             dim_out = 1,                      # output dimension, ex. rgb value
-                            num_layers = len(layers),         # number of layers
+                            num_layers = 9,         # number of layers
                             final_activation = nn.Identity(), # activation of final layer (nn.Identity() for direct output)
                             w0_initial = 30.                  # different signals may require different omega_0 in the first layer - this is a hyperparameter
                         )
@@ -188,7 +188,8 @@ class FCN():
             self.device = 'cpu'
         else:
             self.device = device
-        self.loss_function = nn.MSELoss(reduction='mean')
+        # self.loss_function = nn.MSELoss(reduction='mean')
+        self.loss_function = nn.L1Loss(reduction='mean')
         'Initialize iterator'
         self.iter = 0
         self.rmax, self.tmax = bounds
@@ -200,7 +201,7 @@ class FCN():
         self.f_hat = torch.zeros(total_batch_size, 1).to(device)
 
     def cylindrical_coords(self, input):
-        x, y, t = input
+        x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
         r = torch.sqrt(x + y)
         phi = torch.atan2(y, x)
         return r, phi
@@ -245,7 +246,8 @@ class FCN():
         sin_phi = torch.sin(phi)
         cos_phi = torch.cos(phi)
         pnet = self.dnn(g)
-        p_x_y_t = autograd.grad(pnet, g, torch.ones([g.shape[0], 1]).to(self.device), create_graph=True)[0]
+        p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
+                          create_graph=True)[0]
         p_x = p_x_y_t[:, [0]]
         p_y = p_x_y_t[:, [1]]
         dp_dt = p_x_y_t[:, [2]]
@@ -259,8 +261,10 @@ class FCN():
 
         loss_p = self.loss_data(input_data, pm)
         loss_f = self.loss_PDE(input_pde)
+        loss_bc = self.loss_bc(input_pde)
 
-        loss_val = loss_p + loss_f
+        # loss_val = 1e2*loss_p + 1e-3*loss_f
+        loss_val = loss_p + 1e-2*(loss_f + loss_bc)
 
         return loss_val, loss_p, loss_f
 
@@ -323,19 +327,17 @@ class FCN():
         return error_vec, relative_error.item(), p_pred
 
 class PINNDataset(Dataset):
-    def __init__(self, rirdata, x_true, y_true, t, data_ind, boundary_ind, t_ind, transform=None, target_transform=None, device = 'cuda'):
+    def __init__(self, rirdata, x_true, y_true, t, data_ind, x_y_boundary_ind, t_ind, transform=None, target_transform=None, device = 'cuda'):
         self.transform = transform
         self.target_transform = target_transform
         self.tfnp = lambda x : torch.from_numpy(x).float().to(device)
-
-        # TrainPositions = [tfnp(x_true[data_ind]), tfnp(y_true[data_ind]), tfnp(t[t_ind])]
-        # BCPositions = [tfnp(x_true[boundary_ind]), tfnp(y_true[boundary_ind]), tfnp(t[t_ind])]
-        # EvalPositions = [tfnp(x_true), tfnp(y_true), tfnp(t[t_ind])]
+        self.counter = 1
+        self.maxcounter = int(1e9)
         self.TrainData = rirdata[data_ind]
-        self.BCData = rirdata[boundary_ind.squeeze(-1)]
+        self.BCData = rirdata[x_y_boundary_ind.squeeze(-1)]
         self.t_ind = t_ind
         self.data_ind = data_ind
-        self.boundary_ind = boundary_ind.squeeze(-1)
+        self.x_y_boundary_ind = x_y_boundary_ind.squeeze(-1)
         self.x_true = x_true
         self.y_true = y_true
         self.t = t
@@ -360,26 +362,35 @@ class PINNDataset(Dataset):
         return len(self.t_ind)
 
     def __getitem__(self, idx):
-        # data_time_indices = np.random.choice(self.t_ind, self.n_time_instances, replace= False)
-        t_batch_indx = self.t_ind[idx]
+        if self.counter < self.maxcounter:
+            progressive_t_counter = max(self.counter//1000, 100)
+            progressive_t_counter = min(progressive_t_counter, len(self.t_ind))
+            t_ind_temp = self.t_ind[self.t_ind < progressive_t_counter]
+            idx = np.random.randint(0, progressive_t_counter)
+            t_batch_indx = t_ind_temp[idx]
+        else:
+            t_batch_indx = self.t_ind[idx]
         t_data = self.t[t_batch_indx]
         pressure_batch = self.TrainData[:, t_batch_indx].flatten()
         pressure_bc_batch = self.BCData[:, t_batch_indx].flatten()
         x_data, y_data = self.x_true[self.data_ind], self.y_true[self.data_ind]
-        x_bc, y_bc = self.x_true[self.boundary_ind], self.y_true[self.boundary_ind]
+        x_bc, y_bc = self.x_true[self.x_y_boundary_ind], self.y_true[self.x_y_boundary_ind]
         x_pde = torch.FloatTensor(len(x_data)).uniform_(self.xmin, self.xmax)
         y_pde = torch.FloatTensor(len(x_data)).uniform_(self.ymin, self.ymax)
-        t_pde = torch.FloatTensor(len(x_data)).uniform_(0., self.tmax)
+        if self.counter < self.maxcounter:
+            t_pde = torch.FloatTensor(len(x_data)).uniform_(0., t_data.max())
+        else:
+            t_pde = torch.FloatTensor(len(x_data)).uniform_(0., self.tmax)
         tt_data = np.repeat(t_data, len(x_data))
         collocation_train = np.stack([x_data, y_data, tt_data], axis = 0)
         collocation_pde = np.stack([x_pde, y_pde, t_pde], axis = 0)
         tt_bc = np.repeat(t_data, len(x_bc))
         collocation_bc = np.stack([x_bc, y_bc, tt_bc], axis = 0)
+        self.counter += 1
         return {'collocation_train' : self.tfnp(collocation_train),
                 'collocation_bc' : self.tfnp(collocation_bc),
                 'collocation_pde' : self.tfnp(collocation_pde),
-                'collocation_all' : self.collocation_all,
                 'pressure_bc_batch' : self.tfnp(pressure_bc_batch),
                 'pressure_batch' : self.tfnp(pressure_batch),
-                'pressure_all' : self.pressure_all,
-                't_batch_indx' : t_batch_indx}
+                't_batch_indx' : t_batch_indx,
+                'max_t': t_data.max()}
