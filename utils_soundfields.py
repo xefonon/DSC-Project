@@ -759,3 +759,6 @@ def nmse(y_meas, y_predicted):
     num = np.sum(abs(y_meas - y_predicted)**2)
     denom = np.sum(abs(y_meas)**2)
     return 10*np.log10(num/denom)
+
+for i in range(10):
+    print(f'\rsteps: {i}, loss: {1.2*i:.3}', end='', flush=True)
