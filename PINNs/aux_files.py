@@ -70,8 +70,8 @@ def plot_results(collocation_data, rirdata, PINN):
         error_vecs.append(error_vec)
         relative_errors.append(relative_error)
     fig, axes = plt.subplots(nrows=3, ncols=Nplots, sharex=True, sharey=True)
-    error_vec_minmax = (np.array(error_vecs).min(), np.array(error_vecs).mean())
-    p_pred_minmax = (np.array(Pred_pressure).min(), np.array(Pred_pressure).max())
+    error_vec_minmax = (np.array(error_vecs).min(), 1.)
+    p_pred_minmax = (rirdata.min(), rirdata.max())
     for i, ax in enumerate(axes[0]):
         if i == 2:
             name = 'Predicted - \n'
@@ -130,11 +130,11 @@ class DNN(nn.Module):
             # self.linears = nn.ModuleList([Siren(dim_in=layers[i],dim_out=layers[i + 1]) for i in range(len(layers) - 1)])
             self.net = SirenNet(
                             dim_in = layers[0],               # input dimension, ex. 2d coor
-                            dim_hidden = 128,                 # hidden dimension
+                            dim_hidden = 256,                 # hidden dimension
                             dim_out = 1,                      # output dimension, ex. rgb value
-                            num_layers = 9,         # number of layers
+                            num_layers = 5,         # number of layers
                             final_activation = nn.Identity(), # activation of final layer (nn.Identity() for direct output)
-                            w0_initial = 30.                  # different signals may require different omega_0 in the first layer - this is a hyperparameter
+                            w0_initial = 4.                  # different signals may require different omega_0 in the first layer - this is a hyperparameter
                         )
         else:
             self.linears = nn.ModuleList([nn.Linear(layers[i], layers[i + 1]) for i in range(len(layers) - 1)])
@@ -183,7 +183,7 @@ class DNN(nn.Module):
 #  PINN
 # https://github.com/alexpapados/Physics-Informed-Deep-Learning-Solid-and-Fluid-Mechanics
 class FCN():
-    def __init__(self, layers, bounds, device=None, total_batch_size=4080, siren = True):
+    def __init__(self, layers, bounds, device=None, siren = True):
         if device is None:
             self.device = 'cpu'
         else:
@@ -195,14 +195,15 @@ class FCN():
         self.rmax, self.tmax = bounds
         'Call our DNN'
         self.dnn = DNN(layers, bounds=bounds, siren = siren).to(device)
+        self.siren = siren
         'speed of sound'
         self.c = 343. / self.rmax * self.tmax
         'loss vector of zeros'
-        self.f_hat = torch.zeros(total_batch_size, 1).to(device)
+        # self.f_hat = torch.zeros(total_batch_size, 1).to(device)
 
     def cylindrical_coords(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
-        r = torch.sqrt(x + y)
+        r = torch.sqrt(x**2 + y**2)
         phi = torch.atan2(y, x)
         return r, phi
 
@@ -234,7 +235,7 @@ class FCN():
 
         f = p_tt - self.c * (p_xx + p_yy)
 
-        loss_f = self.loss_function(f.view(-1,1), self.f_hat)
+        loss_f = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
 
         return loss_f
 
@@ -248,13 +249,13 @@ class FCN():
         pnet = self.dnn(g)
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
                           create_graph=True)[0]
-        p_x = p_x_y_t[:, [0]]
-        p_y = p_x_y_t[:, [1]]
-        dp_dt = p_x_y_t[:, [2]]
+        p_x = p_x_y_t[:, [0]].flatten()
+        p_y = p_x_y_t[:, [1]].flatten()
+        dp_dt = p_x_y_t[:, [2]].flatten()
         dp_dr = sin_phi * p_y + cos_phi * p_x
         # Sommerfeld conditions
         f = r * (dp_dr + 1 / self.c * dp_dt)
-        bcs_loss = self.loss_function(f, self.f_hat)
+        bcs_loss = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
         return bcs_loss
 
     def loss(self, input_data, input_pde, pm):
@@ -264,9 +265,13 @@ class FCN():
         loss_bc = self.loss_bc(input_pde)
 
         # loss_val = 1e2*loss_p + 1e-3*loss_f
-        loss_val = loss_p + 1e-2*(loss_f + loss_bc)
+        if self.siren:
+            loss_val = loss_p + 1e-5*loss_f + 1e-2*loss_bc
+            # loss_val = loss_p
+        else:
+            loss_val = 10*loss_p + (loss_f + loss_bc)
 
-        return loss_val, loss_p, loss_f
+        return loss_val, loss_p, loss_f, loss_bc
 
     'callable for optimizer'
 
@@ -294,7 +299,7 @@ class FCN():
 
     def SGD_step(self, data_input, pde_input, p_data):
 
-        loss, loss_data, loss_pde = self.loss(data_input, pde_input, p_data)
+        loss, loss_data, loss_pde, loss_bc = self.loss(data_input, pde_input, p_data)
 
         loss.backward()
 
@@ -310,7 +315,10 @@ class FCN():
         #         )
         #     )
 
-        return loss.cpu().detach().numpy(), loss_data.cpu().detach().numpy(), loss_pde.cpu().detach().numpy()
+        return (loss.cpu().detach().numpy(),
+                loss_data.cpu().detach().numpy(),
+                loss_pde.cpu().detach().numpy(),
+                loss_bc.cpu().detach().numpy())
 
     'test neural network'
 
@@ -318,7 +326,8 @@ class FCN():
 
         p_pred = self.dnn(test_input.unsqueeze(0))
         # Relative L2 Norm of the error
-        relative_error = torch.linalg.norm((p_true - p_pred.squeeze(0)), 2) / torch.linalg.norm(p_true,2)
+        # relative_error = torch.linalg.norm((p_true - p_pred.squeeze(0)), 2) / torch.linalg.norm(p_true,2)
+        relative_error = (torch.abs(p_true - p_pred.squeeze(0))**2).mean()
         # Error vector
         error_vec = torch.abs(p_true - p_pred.squeeze(0) / (p_true + np.finfo(np.float32).eps))
         p_pred = p_pred.cpu().detach().numpy()
@@ -327,13 +336,22 @@ class FCN():
         return error_vec, relative_error.item(), p_pred
 
 class PINNDataset(Dataset):
-    def __init__(self, rirdata, x_true, y_true, t, data_ind, x_y_boundary_ind, t_ind, transform=None, target_transform=None, device = 'cuda'):
-        self.transform = transform
-        self.target_transform = target_transform
+    def __init__(self,
+                 rirdata,
+                 x_true,
+                 y_true,
+                 t,
+                 data_ind,
+                 x_y_boundary_ind,
+                 t_ind,
+                 device = 'cuda',
+                 n_pde_samples = 400):
         self.tfnp = lambda x : torch.from_numpy(x).float().to(device)
         self.counter = 1
-        self.maxcounter = int(1e9)
+        # self.maxcounter = int(1e9)
+        self.maxcounter = -1
         self.TrainData = rirdata[data_ind]
+        self.n_pde_samples = n_pde_samples
         self.BCData = rirdata[x_y_boundary_ind.squeeze(-1)]
         self.t_ind = t_ind
         self.data_ind = data_ind
@@ -346,10 +364,10 @@ class PINNDataset(Dataset):
         self.yy = np.tile(self.y_true, len(self.t))
         self.collocation_all = self.tfnp(np.stack([self.xx, self.yy, self.tt], axis = 0))
         self.pressure_all = self.tfnp(rirdata[:, self.t_ind].flatten())
-        self.xmax = self.x_true.max() + 0.1*self.x_true.max()
-        self.xmin = self.x_true.min() + 0.1*self.x_true.min()
-        self.ymax = self.y_true.max() + 0.1*self.y_true.max()
-        self.ymin = self.y_true.min() + 0.1*self.y_true.min()
+        self.xmax = self.x_true.max() + 0.01*self.x_true.max()
+        self.xmin = self.x_true.min() + 0.01*self.x_true.min()
+        self.ymax = self.y_true.max() + 0.01*self.y_true.max()
+        self.ymin = self.y_true.min() + 0.01*self.y_true.min()
         self.tmax = self.t[self.t_ind].max() + 0.1*self.t[self.t_ind].max()
         # self.batch_size = batch_size
         # self.n_time_instances = int(0.6 * self.batch_size)
@@ -374,19 +392,22 @@ class PINNDataset(Dataset):
         pressure_batch = self.TrainData[:, t_batch_indx].flatten()
         pressure_bc_batch = self.BCData[:, t_batch_indx].flatten()
         x_data, y_data = self.x_true[self.data_ind], self.y_true[self.data_ind]
-        x_bc, y_bc = self.x_true[self.x_y_boundary_ind], self.y_true[self.x_y_boundary_ind]
-        x_pde = torch.FloatTensor(len(x_data)).uniform_(self.xmin, self.xmax)
-        y_pde = torch.FloatTensor(len(x_data)).uniform_(self.ymin, self.ymax)
+        x_pde = torch.FloatTensor(self.n_pde_samples).uniform_(self.xmin, self.xmax)
+        y_pde = torch.FloatTensor(self.n_pde_samples).uniform_(self.ymin, self.ymax)
+        x_bc = torch.FloatTensor(self.n_pde_samples).uniform_(self.xmin, self.xmax)
+        y_bc = torch.FloatTensor(self.n_pde_samples).uniform_(self.ymin, self.ymax)
         if self.counter < self.maxcounter:
-            t_pde = torch.FloatTensor(len(x_data)).uniform_(0., t_data.max())
+            t_pde = torch.FloatTensor(self.n_pde_samples).uniform_(0., t_data.max())
+            t_bc = torch.FloatTensor(self.n_pde_samples).uniform_(0., t_data.max())
         else:
-            t_pde = torch.FloatTensor(len(x_data)).uniform_(0., self.tmax)
+            t_pde = torch.FloatTensor(self.n_pde_samples).uniform_(0., self.tmax)
+            t_bc = torch.FloatTensor(self.n_pde_samples).uniform_(0., self.tmax)
         tt_data = np.repeat(t_data, len(x_data))
         collocation_train = np.stack([x_data, y_data, tt_data], axis = 0)
         collocation_pde = np.stack([x_pde, y_pde, t_pde], axis = 0)
-        tt_bc = np.repeat(t_data, len(x_bc))
-        collocation_bc = np.stack([x_bc, y_bc, tt_bc], axis = 0)
+        collocation_bc = np.stack([x_bc, y_bc, t_bc], axis = 0)
         self.counter += 1
+
         return {'collocation_train' : self.tfnp(collocation_train),
                 'collocation_bc' : self.tfnp(collocation_bc),
                 'collocation_pde' : self.tfnp(collocation_pde),
@@ -394,3 +415,84 @@ class PINNDataset(Dataset):
                 'pressure_batch' : self.tfnp(pressure_batch),
                 't_batch_indx' : t_batch_indx,
                 'max_t': t_data.max()}
+
+# class WaveEqDataset(Dataset):
+#     class SingleHelmholtzSource(Dataset):
+#         def __init__(self,
+#                      rirdata,
+#                      x_true,
+#                      y_true,
+#                      t,
+#                      data_ind,
+#                      x_y_boundary_ind,
+#                      t_ind,
+#                      nsamples = 5000,
+#                      device = 'cuda'):
+#             super().__init__()
+#             torch.manual_seed(0)
+#             self.tfnp = lambda x : torch.from_numpy(x).float().to(device)
+#             self.counter = 0
+#             self.full_count = 100e3
+#             self.TrainData = rirdata[data_ind]
+#             self.BCData = rirdata[x_y_boundary_ind.squeeze(-1)]
+#             self.t_ind = t_ind
+#             self.data_ind = data_ind
+#             self.x_y_boundary_ind = x_y_boundary_ind.squeeze(-1)
+#             self.x_true = x_true
+#             self.y_true = y_true
+#             self.nsamples = nsamples
+#             self.t = t
+#             self.tt = np.repeat(self.t, len(self.x_true))
+#             self.xx = np.tile(self.x_true, len(self.t))
+#             self.yy = np.tile(self.y_true, len(self.t))
+#             self.collocation_all = self.tfnp(np.stack([self.xx, self.yy, self.tt], axis = 0))
+#             self.pressure_all = self.tfnp(rirdata[:, self.t_ind].flatten())
+#             self.xmax = self.x_true.max() + 0.01*self.x_true.max()
+#             self.xmin = self.x_true.min() + 0.01*self.x_true.min()
+#             self.rmax = 1.6
+#             self.ymax = self.y_true.max() + 0.01*self.y_true.max()
+#             self.ymin = self.y_true.min() + 0.01*self.y_true.min()
+#             self.tmax = self.t[self.t_ind].max() + 0.1*self.t[self.t_ind].max()
+#
+#         def __len__(self):
+#             return 1
+#
+#         def __getitem__(self, idx):
+#             # indicate where border values are
+#             t_batch_indx = self.t_ind[np.random.randint(0, int(len(self.t_ind)*(self.counter / self.full_count)))]
+#             t_data = self.t[t_batch_indx]
+#             pressure_batch = self.TrainData[:, t_batch_indx].flatten()
+#             pressure_bc_batch = self.BCData[:, t_batch_indx].flatten()
+#             x_data, y_data = self.x_true[self.data_ind], self.y_true[self.data_ind]
+#             tt_data = np.repeat(t_data, len(x_data))
+#             collocation_train = np.stack([x_data, y_data, tt_data], axis=0)
+#             N_train_data = len(collocation_train)
+#             # random coordinates
+#             length = torch.sqrt(torch.FloatTensor(self.nsamples,).uniform_(0., self.rmax**2))
+#             angle = np.pi *  torch.FloatTensor(self.nsamples,).uniform_(0., 2.)
+#             x = length * torch.cos(angle)
+#             y = length * torch.sin(angle)
+#             coords = torch.concat((x[..., None], y[..., None]), axis = -1)
+#
+#             time = torch.zeros(self.nsamples, 1).uniform_(0, 0.4 * (self.counter / self.full_count))
+#             coords = torch.cat([coords, time], axis = -1)
+#             # make sure we always have training samples from data
+#             coords[-N_train_data] = torch.cat([coords, time], axis = -1)
+#
+#
+#
+#             return {'coords': coords}, {'source_boundary_values': boundary_values,
+#                                         'gt': self.field,
+#                                         'sound_speed': c,
+#                                         'sound_speed_grid': c_grid,
+#                                         'mgrid': self.mgrid,
+#                                         'coordinate_grid': coords,
+#                                         'wavenumber': self.wavenumber,
+#                                         'omega': self.omega,
+#                                         'sidelength': self.sidelength,
+#                                         'samples': self.samples,
+#                                         'c_scale': self.c_scale,
+#                                         'ground_impedance': self.ground_impedance,
+#                                         'source_indices': source_indices,
+#                                         'bc_indx_dict': bc_indx_dict,
+#                                         'bc_indices': bc_indices}

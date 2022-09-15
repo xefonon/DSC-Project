@@ -6,3 +6,7 @@ __pycache__/
 *.iml
 
 *.xml
+
+PINNs/PINN_checkpoints/
+
+PINNs/wandb/

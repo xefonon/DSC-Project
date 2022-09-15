@@ -48,7 +48,7 @@ if device == 'cuda':
 )
 def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     config = {
-        'rir_time': 0.2,
+        'rir_time': 0.05,
         'check_point_dir': checkpoint_dir,
         'train_epochs': train_epochs,
         'lr': 2e-4,
@@ -71,10 +71,12 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
 
     # %%
     """Training Data"""
-    data = rirdata[:, :int(hparams.rir_time * fs)]
-    data = data/np.max(abs(data)) # truncate
-    t = np.linspace(0, hparams.rir_time, int(hparams.rir_time * fs))  # Does not need normalisation if < 1 second
+    data = rirdata[:, :int(hparams.rir_time * fs)] # truncate
+    rirdata = rirdata/ np.max(abs(rirdata))
+    data = data / np.max(abs(data))
+    # t = np.linspace(0, hparams.rir_time, int(hparams.rir_time * fs))  # Does not need normalisation if < 1 second
     t_ind = np.arange(0, int(hparams.rir_time * fs))
+    t = np.linspace(0., rirdata.shape[-1]/fs, rirdata.shape[-1]) # Does not need normalisation if < 1 second
     x_true = grid[0]
     y_true = grid[1]
     # boundary indices
@@ -87,7 +89,7 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     interp_indx = np.random.choice(reg_ind.squeeze(-1), 7, replace=False)  # Randomly chosen points for Interior
     # add to boundary indices
     # data_ind = np.vstack((boundary_ind, interp_indx[..., None])).squeeze(-1)
-    data_ind = np.random.choice(reg_ind.squeeze(-1), 300, replace=False)
+    data_ind = np.random.choice(reg_ind.squeeze(-1), 850, replace=False)
     # regular point grid
     mask = np.ones(grid.shape[1], dtype=bool)
     mask[data_ind] = False
@@ -99,10 +101,10 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     total_batch_size = hparams.batch_size * len(x_true[data_ind])
     train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size, shuffle=True, drop_last=True)
 
-    PINN = FCN(hparams.layers, bounds=[2., .4], device=device,
-               total_batch_size=total_batch_size, siren = hparams.siren)
+    PINN = FCN(hparams.layers, bounds=[2., .4], device=device, siren=hparams.siren)
 
     params = list(PINN.dnn.parameters())
+    wandb.watch(PINN.dnn, PINN.loss_function, log = 'all')
 
     '''Optimization'''
     optimizer = torch.optim.Adam(params, hparams.lr)
@@ -126,7 +128,8 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
         optimizer.load_state_dict(state_dict_pinn["optim"])
 
     PINN.dnn.train()
-    t_indx_plt = (fs * np.array([0.005, 0.02, 0.035, 0.05, 0.1])).astype(int)
+    # t_indx_plt = (fs * np.array([0.005, 0.02, 0.035, 0.05, 0.1])).astype(int)
+    t_indx_plt = (fs * np.array([0.005, 0.01, 0.02, 0.035, 0.04])).astype(int)
     xyt_plt, p_plt = construct_input_vec(rirdata, x_true, y_true, t, t_ind=t_indx_plt)
     for epoch in range(max(0, last_epoch), train_epochs):
         for i, batch in enumerate(train_dataloader):
@@ -136,21 +139,21 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
             max_t = batch['max_t'].numpy().max()
             # p_test = batch['pressure_all']
             optimizer.zero_grad()
-            loss_total, loss_data, loss_pde = PINN.SGD_step(data_input, pde_input, p_data)
+            loss_total, loss_data, loss_pde, loss_bc = PINN.SGD_step(data_input, pde_input, p_data)
             optimizer.step()
             if steps % 100 == 0:
-                wandb.log({
-                              "total_loss": loss_total,
-                              "data_loss": loss_data,
-                              "PDE_loss": loss_pde})
+                wandb.log({"total_loss": loss_total,
+                           "data_loss": loss_data,
+                           "PDE_loss": loss_pde,
+                           "BCs_loss": loss_bc})
             if steps % int(1000) == 0:
                 fig, errors = plot_results(xyt_plt, p_plt, PINN)
                 wandb.log({"Sound_Fields": fig})
                 plt.close('all')
                 for ii, error in enumerate(errors):
                     wandb.log({
-                                  f"error - t: {xyt_plt[ii, 2, 0]:.3f} s": error,
-                                  "steps": steps})
+                        f"error - t: {xyt_plt[ii, 2, 0]:.3f} s": error,
+                        "steps": steps})
             if steps % int(1000) == 0:
                 checkpoint_path = "{}/PINN_{:08d}".format(checkpoint_dir, steps)
                 save_checkpoint(checkpoint_dir,
@@ -164,7 +167,9 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
                                 remove_below_step=steps // 2
                                 )
             steps += 1
-            print(f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}, max_t: {max_t:.2}', end='', flush=True)
+            print(f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}, max_t: {max_t:.2}', end='',
+                  flush=True)
+
 
 if __name__ == "__main__":
     train_PINN()
