@@ -1,9 +1,9 @@
 import torch
 import wandb
 from torch.utils.data import DataLoader
-from aux_files import (FCN, PINNDataset, construct_input_vec,
-                       plot_results, scan_checkpoint, save_checkpoint,
-                       load_checkpoint)
+from aux_functions import (FCN, PINNDataset, construct_input_vec,
+                           plot_results, scan_checkpoint, save_checkpoint,
+                           load_checkpoint)
 from pathlib import Path
 import numpy as np
 import click
@@ -36,25 +36,29 @@ if device == 'cuda':
 )
 @click.option(
     "--train_epochs",
-    default=20000,
+    default=1e6,
     type=int,
     help="Number of epochs for which to train PINN (in total)",
 )
 @click.option(
     "--siren",
-    default=True,
+    default=False,
     type=bool,
     help="Use sinusoidal activations",
 )
 def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     config = {
-        'rir_time': 0.05,
+        'rir_time': 0.1,
         'check_point_dir': checkpoint_dir,
         'train_epochs': train_epochs,
-        'lr': 2e-4,
-        'layers': np.array([3, 128, 128, 128, 128, 128, 128, 128, 128, 128, 1]),  # 9 hidden layers
+        'lr': 1e-5,
+        'layers': np.array([3, 100, 100, 100, 100, 100, 100, 100, 100, 100, 1]),  # 9 hidden layers
         'batch_size': 90,
-        'siren': siren
+        'siren': siren,
+        'lambda_data' : 10.,
+        'lambda_pde' : .1,
+        'lambda_bc' : 10.,
+        'n_pde_samples' : 10000
     }
     wandb.init(config=config, project="PINN_sound_field")
 
@@ -89,7 +93,8 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     interp_indx = np.random.choice(reg_ind.squeeze(-1), 7, replace=False)  # Randomly chosen points for Interior
     # add to boundary indices
     # data_ind = np.vstack((boundary_ind, interp_indx[..., None])).squeeze(-1)
-    data_ind = np.random.choice(reg_ind.squeeze(-1), 850, replace=False)
+    # data_ind = np.random.choice(reg_ind.squeeze(-1), 850, replace=False)
+    data_ind = np.arange(0, len(x_true))
     # regular point grid
     mask = np.ones(grid.shape[1], dtype=bool)
     mask[data_ind] = False
@@ -97,17 +102,23 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     # %%
 
     dataset = PINNDataset(data, x_true, y_true, t, data_ind, boundary_ind,
-                          t_ind, device=device)
-    total_batch_size = hparams.batch_size * len(x_true[data_ind])
-    train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size, shuffle=True, drop_last=True)
+                          t_ind, device=device, n_pde_samples = hparams.n_pde_samples )
+    # total_batch_size = hparams.batch_size * len(x_true[data_ind])
+    bounds = {'x': (-1, 1),
+              'y': (-1, 1),
+              't': (0, hparams.rir_time)}
+    train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size,
+                                  shuffle=True,
+                                  pin_memory=True, num_workers=0)
 
-    PINN = FCN(hparams.layers, bounds=[2., .4], device=device, siren=hparams.siren)
+    PINN = FCN(hparams.layers, bounds=bounds, device=device, siren=hparams.siren,
+               lambda_data= hparams.lambda_data, lambda_pde= hparams.lambda_pde, lambda_bc= hparams.lambda_bc)
 
     params = list(PINN.dnn.parameters())
     wandb.watch(PINN.dnn, PINN.loss_function, log = 'all')
 
     '''Optimization'''
-    optimizer = torch.optim.Adam(params, hparams.lr)
+    optimizer = torch.optim.Adam(params, hparams.lr, betas=(0.9, 0.999), eps=1e-08, amsgrad=False)
     'Neural Network Summary'
     print(PINN.dnn)
     # %%
@@ -129,7 +140,8 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
 
     PINN.dnn.train()
     # t_indx_plt = (fs * np.array([0.005, 0.02, 0.035, 0.05, 0.1])).astype(int)
-    t_indx_plt = (fs * np.array([0.005, 0.01, 0.02, 0.035, 0.04])).astype(int)
+    t_indx_plt = (fs * np.linspace(.01, hparams.rir_time, 5)).astype(int)
+    # t_indx_plt = (fs * np.array([0.005, 0.01, 0.015])).astype(int)
     xyt_plt, p_plt = construct_input_vec(rirdata, x_true, y_true, t, t_ind=t_indx_plt)
     for epoch in range(max(0, last_epoch), train_epochs):
         for i, batch in enumerate(train_dataloader):
@@ -139,7 +151,9 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
             max_t = batch['max_t'].numpy().max()
             # p_test = batch['pressure_all']
             optimizer.zero_grad()
-            loss_total, loss_data, loss_pde, loss_bc = PINN.SGD_step(data_input, pde_input, p_data)
+            loss_total, loss_data, loss_pde, loss_bc = PINN.SGD_step(data_input.to(device),
+                                                                     pde_input.to(device),
+                                                                     p_data.to(device))
             optimizer.step()
             if steps % 100 == 0:
                 wandb.log({"total_loss": loss_total,
@@ -148,7 +162,7 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
                            "BCs_loss": loss_bc})
             if steps % int(1000) == 0:
                 fig, errors = plot_results(xyt_plt, p_plt, PINN)
-                wandb.log({"Sound_Fields": fig})
+                wandb.log({"Sound_Fields": wandb.Image(fig)})
                 plt.close('all')
                 for ii, error in enumerate(errors):
                     wandb.log({

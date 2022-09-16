@@ -42,6 +42,40 @@ def stack_real_imag_H(mat):
     )
     return mat_stack
 
+def plot_array_pressure(p_array, array_grid, ax=None, plane = False, norm = None, z_label = False,
+                        cmp = None):
+    if ax is None:
+        if z_label:
+            ax = plt.axes(projection='3d')
+        else:
+            ax = plt.axes()
+    if cmp is None:
+        cmp = plt.get_cmap("RdBu")
+    else:
+        cmp = plt.get_cmap(cmp)
+    if norm is None:
+        vmin = p_array.real.min()
+        vmax = p_array.real.max()
+    else:
+        vmin, vmax = norm
+    if z_label:
+        sc = ax.scatter(array_grid[0], array_grid[1], array_grid[2], c=p_array.real,
+                        cmap=cmp, alpha=1., s=10, vmin = vmin, vmax = vmax)
+    else:
+        sc = ax.scatter(array_grid[0], array_grid[1], c=p_array.real,
+                        cmap=cmp, alpha=1., s=10, vmin = vmin, vmax = vmax)
+    ax.set_xlabel('x [m]')
+    ax.set_ylabel('y [m]')
+    if z_label:
+        ax.set_zlabel('z [m]')
+        ax.view_init(45, 45)
+
+        if plane:
+            ax.set_box_aspect((1,1,1))
+        else:
+            ax.set_box_aspect((array_grid[0].max(), array_grid[1].max(), array_grid[2].max()))
+    return ax, sc
+
 # @jit(nopython=True)
 def speed_of_sound(T):
     """

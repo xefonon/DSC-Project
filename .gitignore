@@ -10,3 +10,5 @@ __pycache__/
 PINNs/PINN_checkpoints/
 
 PINNs/wandb/
+
+PINNs/SIREN_checkpoints/

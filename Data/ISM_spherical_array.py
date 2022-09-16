@@ -355,7 +355,7 @@ def get_ISM_RIRs(room_coords,
                  snr=45):
     # grid_ref = np.asarray(reference_grid(21))
     n_ref = 1000
-    grid_ref = disk_grid_fibonacci(n_ref, r = 1.5)
+    grid_ref = disk_grid_fibonacci(n_ref, r = 1)
     grid_ref = np.reshape(grid_ref, (3, n_ref))
 
 
@@ -465,8 +465,9 @@ def get_ISM_RIRs(room_coords,
     RIRs_ref = np.pad(RIRs_ref, ((0,0), (0, 16384 - trunc)))
     # time samples
     t = np.linspace(0, 16384 / fs, 16384)
-    RIR_measured = adjustSNR(RIR_measured, snrdB=snr)
-    RIRs_ref = adjustSNR(RIRs_ref, snrdB=snr)
+    if snr is not None:
+        RIR_measured = adjustSNR(RIR_measured, snrdB=snr)
+        RIRs_ref = adjustSNR(RIRs_ref, snrdB=snr)
 
     # plot RIRs
     if plot_RIR:
@@ -518,7 +519,7 @@ def get_ISM_RIRs(room_coords,
                ISM and view the first 0.2 sec')
 @click.option('--raytrace', default=False, is_flag=True,
               help='Use combination of ray tracing and ISM')
-@click.option('--RT60', default=0.5, type=float,
+@click.option('--RT60', default=0.2, type=float,
               help='Reverberation time from which to calculate \
                      the uniform absorption coefficient with the \
                      Sabine equation')
@@ -526,7 +527,7 @@ def get_ISM_RIRs(room_coords,
               help='Number of transducers in array')
 @click.option('--array_radius', default=.5, type=float,
               help='Radius of spherical array')
-@click.option('--max_XY', nargs=2, default=[7, 5], type=click.Tuple([float, float]),
+@click.option('--max_XY', nargs=2, default=[10, 12], type=click.Tuple([float, float]),
               help='maximum X Y dimensions of random rooms')
 @click.option('--n_rooms', default=1, type=int,
               help='Number of rooms to generate')
@@ -579,7 +580,7 @@ def run_ISM(plot_array, plot_room, plot_rir,
         else:
             multy = 1
 
-        snr = 30
+        snr = None
         source_coords = list(np.asarray(source_coords) + np.array([multx * .001, multy * .001, .001]))
         rirs_sphere, rirs_ref, gridsphere, grid_ref = get_ISM_RIRs(room_coords,
                                                                    room_height,

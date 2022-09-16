@@ -134,10 +134,10 @@ class SingleBVPNet(MetaModule):
             params = OrderedDict(self.named_parameters())
 
         # Enables us to compute gradients w.r.t. coordinates
-        coords_org = model_input['coords'].clone().detach().requires_grad_(True)
-        coords = coords_org
+        # coords_org = model_input['coords'].clone().detach().requires_grad_(True)
+        # coords = coords_org
 
-        y = self.net(coords, self.get_subdict(params, 'net'))
+        y = self.net(model_input, self.get_subdict(params, 'net'))
         output = torch.zeros_like(y)
 
         if self.polar:
@@ -147,7 +147,7 @@ class SingleBVPNet(MetaModule):
         else:
             output = y
 
-        return {'model_in': coords_org, 'model_out': output}
+        return output
 
     def forward_with_activations(self, model_input):
         '''Returns not only model output, but also intermediate activations.'''
