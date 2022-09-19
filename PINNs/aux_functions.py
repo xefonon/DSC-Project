@@ -6,7 +6,7 @@ import torch.autograd as autograd  # computation graph
 import torch.nn as nn  # neural networks
 import numpy as np
 from torch.utils.data import Dataset
-from utils_soundfields import plot_sf, plot_array_pressure
+from utils_soundfields import plot_sf
 # from tueplots import axes, bundles
 import matplotlib.pyplot as plt
 import os
@@ -72,18 +72,15 @@ def plot_results(collocation_data, rirdata, PINN):
         relative_errors.append(relative_error)
     fig, axes = plt.subplots(nrows=3, ncols=Nplots, sharex=True, sharey=True)
     error_vec_minmax = (np.array(error_vecs).min(), np.array(error_vecs).min()+ 1.)
-    p_pred_minmax = (np.array(Pred_pressure).min(), np.array(Pred_pressure).max())
-    p_minmax = (rirdata.min(), rirdata.max())
+    p_pred_minmax = (rirdata.min(), rirdata.max())
     for i, ax in enumerate(axes[0]):
         if i == 2:
             name = 'Predicted - \n'
         else:
             name = ''
-        ax, im = plot_array_pressure(Pred_pressure[i], collocation_data[0, 0:2], ax=ax, norm = p_pred_minmax)
-        ax.set_title(name +'t = {:.2f}s'.format(collocation_data[i, 2, 0]))
-        # ax, im = plot_sf(Pred_pressure[i], collocation_data[i, 0], collocation_data[i, 1],
-        #                 ax=ax, name= name +'t = {:.2f}s'.format(collocation_data[i, 2, 0]),
-        #                 clim= p_pred_minmax)
+        ax, im = plot_sf(Pred_pressure[i], collocation_data[i, 0], collocation_data[i, 1],
+                        ax=ax, name= name +'t = {:.2f}s'.format(collocation_data[i, 2, 0]),
+                        clim= p_pred_minmax)
         if i != 0:
             ax.set_ylabel('')
     for i, ax in enumerate(axes[1]):
@@ -91,11 +88,9 @@ def plot_results(collocation_data, rirdata, PINN):
             name = 'True'
         else:
             name = ''
-        ax, im2 = plot_array_pressure(rirdata[:,i], collocation_data[0, 0:2], ax=ax, norm = p_minmax)
-        ax.set_title(name)
-        # ax, _ = plot_sf(rirdata[:,i], collocation_data[i, 0], collocation_data[i, 1],
-        #                 ax=ax, name = name,
-        #                 clim = p_pred_minmax)
+        ax, _ = plot_sf(rirdata[:,i], collocation_data[i, 0], collocation_data[i, 1],
+                        ax=ax, name = name,
+                        clim = p_pred_minmax)
         if i != 0:
             ax.set_ylabel('')
     for i, ax in enumerate(axes[2]):
@@ -103,22 +98,17 @@ def plot_results(collocation_data, rirdata, PINN):
             name = 'Relative Error'
         else:
             name = ''
-        ax, im3 = plot_array_pressure(error_vecs[i], collocation_data[0, 0:2], ax=ax,
-                                      norm=error_vec_minmax, cmp = 'hot')
-        ax.set_title(name)
-        # ax, im2 = plot_sf(error_vecs[i], collocation_data[i, 0], collocation_data[i, 1],
-        #                 ax=ax, name = name, clim = error_vec_minmax, cmp = 'hot')
+        ax, im2 = plot_sf(error_vecs[i], collocation_data[i, 0], collocation_data[i, 1],
+                        ax=ax, name = name, clim = error_vec_minmax, cmap = 'hot')
         if i != 0:
             ax.set_ylabel('')
     fig.subplots_adjust(right=0.8)
     # pressure colorbar
-    cbar_ax = fig.add_axes([0.82, 0.71, 0.02, 0.2])
+    cbar_ax = fig.add_axes([0.82, 0.41, 0.02, 0.4])
     fig.colorbar(im, cax=cbar_ax)
-    cbar_ax2 = fig.add_axes([0.82, 0.41, 0.02, 0.2])
-    fig.colorbar(im2, cax=cbar_ax2)
     # error colorbar
-    cbar_ax3 = fig.add_axes([0.82, 0.11, 0.02, 0.2])
-    fig.colorbar(im3, cax=cbar_ax3)
+    cbar_ax2 = fig.add_axes([0.82, 0.11, 0.02, 0.2])
+    fig.colorbar(im2, cax=cbar_ax2)
 
 
     return fig, np.array(relative_errors)
@@ -151,7 +141,7 @@ class DNN(nn.Module):
                             w0_initial = 30.,                  # different signals may require different omega_0 in the first layer - this is a hyperparameter
                             w0 = 1.
                         )
-            # self.net = SingleBVPNet(out_features= 1, in_features= 3, hidden_features= 256, num_hidden_layers= 4)
+            # self.net = SingleBVPNet(out_features= 1, in_features= 3, hidden_features= 256, num_hidden_layers= 6)
         else:
             self.linears = nn.ModuleList([nn.Linear(layers[i], layers[i + 1]) for i in range(len(layers) - 1)])
             'Xavier Normal Initialization'
@@ -219,11 +209,17 @@ class FCN():
         self.lambda_bc = lambda_bc
         self.siren = siren
         'speed of sound'
+        self.c = 343.
+        # self.c = 343. / max(self.xmax, self.ymax) * self.tmax
 
         (self.xmin, self.xmax) = bounds['x']
         (self.ymin, self.ymax) = bounds['y']
         (self.tmin, self.tmax) = bounds['t']
-        self.c = 343. / max(self.xmax, self.ymax) * self.tmax
+
+        self.xmin /=self.c
+        self.xmax /=self.c
+        self.ymin /=self.c
+        self.ymax /=self.c
 
         self.lb = torch.Tensor([self.xmin, self.ymin, self.tmin]).to(self.device)
         self.ub = torch.Tensor([self.xmax, self.ymax, self.tmax]).to(self.device)
@@ -237,21 +233,22 @@ class FCN():
         return r, phi
 
     def loss_data(self, input, pm):
+        g = input.clone()
+        g = self.scale_xy(g)
+        g.requires_grad = True
 
-        loss_u = self.loss_function(self.dnn(input), pm)
+        loss_u = self.loss_function(self.dnn(g), pm)
 
         return loss_u
 
     def loss_PDE(self, input):
 
         g = input.clone()
-        gscaled = input.clone()
-        gscaled = self.scale_xy(gscaled)
+        g = self.scale_xy(g)
         g.requires_grad = True
-        gscaled.requires_grad = True
 
         pnet = self.dnn(g)
-        pnetscaled = self.dnn(gscaled)
+        # pnetscaled = self.dnn(gscaled)
 
         p_r_t = \
             autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
@@ -260,21 +257,21 @@ class FCN():
         p_rr_tt = \
             autograd.grad(p_r_t.view(-1, 1), g, torch.ones(input.view(-1, 1).shape).to(self.device),
                           create_graph=True)[0]
-        p_r_t_scaled = \
-            autograd.grad(pnetscaled.view(-1, 1), gscaled, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-                          retain_graph=True,
-                          create_graph=True)[0]
-        p_rr_tt_scaled = \
-            autograd.grad(p_r_t_scaled.view(-1, 1), gscaled, torch.ones(input.view(-1, 1).shape).to(self.device),
-                          create_graph=True)[0]
-
-        p_xx = p_rr_tt_scaled[:, [0]]
-        p_yy = p_rr_tt_scaled[:, [1]]
+        # p_r_t_scaled = \
+        #     autograd.grad(pnetscaled.view(-1, 1), gscaled, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
+        #                   retain_graph=True,
+        #                   create_graph=True)[0]
+        # p_rr_tt_scaled = \
+        #     autograd.grad(p_r_t_scaled.view(-1, 1), gscaled, torch.ones(input.view(-1, 1).shape).to(self.device),
+        #                   create_graph=True)[0]
+        #
+        p_xx = p_rr_tt[:, [0]]
+        p_yy = p_rr_tt[:, [1]]
         p_tt = p_rr_tt[:, [2]]
 
         # given that x, y are scaled here so that x' = x/c and y' = y/c, then c = 1
         # f = p_tt - self.c * (p_xx + p_yy)
-        f = p_tt - 1.*(p_xx + p_yy)
+        f = p_xx + p_yy - 1.*p_tt
 
         loss_f = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
 
@@ -283,32 +280,21 @@ class FCN():
     def loss_bc(self, input):
         # x,y,t = input
         g = input.clone()
+        g = self.scale_xy(g)
         g.requires_grad = True
-
-        gscaled = input.clone()
-        gscaled = self.scale_xy(gscaled)
-        gscaled.requires_grad = True
-
-        r, phi = self.cylindrical_coords(gscaled)
-
+        r, phi = self.cylindrical_coords(input)
         sin_phi = torch.sin(phi)
         cos_phi = torch.cos(phi)
         pnet = self.dnn(g)
-        pnetscaled = self.dnn(gscaled)
-
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
                           create_graph=True)[0]
-        p_x_y_t_scaled = autograd.grad(pnetscaled.view(-1, 1), gscaled,
-                                       torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-                                       create_graph=True)[0]
-        p_x = p_x_y_t_scaled[:, [0]].flatten()
-        p_y = p_x_y_t_scaled[:, [1]].flatten()
+        p_x = p_x_y_t[:, [0]].flatten()
+        p_y = p_x_y_t[:, [1]].flatten()
         dp_dt = p_x_y_t[:, [2]].flatten()
         dp_dr = sin_phi * p_y + cos_phi * p_x
-        # Sommerfeld conditions
-        # given that x, y are scaled here so that x' = x/c and y' = y/c, then c = 1
+        # Sommerfeld radiation condition (eq. 4.5.5 - "Acoustics" - Allan D. Pierce)
         # f = r * (dp_dr + 1 / self.c * dp_dt)
-        f = r * (dp_dr + 1. * dp_dt)
+        f = r * (dp_dr + dp_dt)
         bcs_loss = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
         return bcs_loss
 
@@ -477,83 +463,3 @@ class PINNDataset(Dataset):
                 't_batch_indx' : t_batch_indx,
                 'max_t': t_data.max()}
 
-# class WaveEqDataset(Dataset):
-#     class SingleHelmholtzSource(Dataset):
-#         def __init__(self,
-#                      rirdata,
-#                      x_true,
-#                      y_true,
-#                      t,
-#                      data_ind,
-#                      x_y_boundary_ind,
-#                      t_ind,
-#                      nsamples = 5000,
-#                      device = 'cuda'):
-#             super().__init__()
-#             torch.manual_seed(0)
-#             self.tfnp = lambda x : torch.from_numpy(x).float().to(device)
-#             self.counter = 0
-#             self.full_count = 100e3
-#             self.TrainData = rirdata[data_ind]
-#             self.BCData = rirdata[x_y_boundary_ind.squeeze(-1)]
-#             self.t_ind = t_ind
-#             self.data_ind = data_ind
-#             self.x_y_boundary_ind = x_y_boundary_ind.squeeze(-1)
-#             self.x_true = x_true
-#             self.y_true = y_true
-#             self.nsamples = nsamples
-#             self.t = t
-#             self.tt = np.repeat(self.t, len(self.x_true))
-#             self.xx = np.tile(self.x_true, len(self.t))
-#             self.yy = np.tile(self.y_true, len(self.t))
-#             self.collocation_all = self.tfnp(np.stack([self.xx, self.yy, self.tt], axis = 0))
-#             self.pressure_all = self.tfnp(rirdata[:, self.t_ind].flatten())
-#             self.xmax = self.x_true.max() + 0.01*self.x_true.max()
-#             self.xmin = self.x_true.min() + 0.01*self.x_true.min()
-#             self.rmax = 1.6
-#             self.ymax = self.y_true.max() + 0.01*self.y_true.max()
-#             self.ymin = self.y_true.min() + 0.01*self.y_true.min()
-#             self.tmax = self.t[self.t_ind].max() + 0.1*self.t[self.t_ind].max()
-#
-#         def __len__(self):
-#             return 1
-#
-#         def __getitem__(self, idx):
-#             # indicate where border values are
-#             t_batch_indx = self.t_ind[np.random.randint(0, int(len(self.t_ind)*(self.counter / self.full_count)))]
-#             t_data = self.t[t_batch_indx]
-#             pressure_batch = self.TrainData[:, t_batch_indx].flatten()
-#             pressure_bc_batch = self.BCData[:, t_batch_indx].flatten()
-#             x_data, y_data = self.x_true[self.data_ind], self.y_true[self.data_ind]
-#             tt_data = np.repeat(t_data, len(x_data))
-#             collocation_train = np.stack([x_data, y_data, tt_data], axis=0)
-#             N_train_data = len(collocation_train)
-#             # random coordinates
-#             length = torch.sqrt(torch.FloatTensor(self.nsamples,).uniform_(0., self.rmax**2))
-#             angle = np.pi *  torch.FloatTensor(self.nsamples,).uniform_(0., 2.)
-#             x = length * torch.cos(angle)
-#             y = length * torch.sin(angle)
-#             coords = torch.concat((x[..., None], y[..., None]), axis = -1)
-#
-#             time = torch.zeros(self.nsamples, 1).uniform_(0, 0.4 * (self.counter / self.full_count))
-#             coords = torch.cat([coords, time], axis = -1)
-#             # make sure we always have training samples from data
-#             coords[-N_train_data] = torch.cat([coords, time], axis = -1)
-#
-#
-#
-#             return {'coords': coords}, {'source_boundary_values': boundary_values,
-#                                         'gt': self.field,
-#                                         'sound_speed': c,
-#                                         'sound_speed_grid': c_grid,
-#                                         'mgrid': self.mgrid,
-#                                         'coordinate_grid': coords,
-#                                         'wavenumber': self.wavenumber,
-#                                         'omega': self.omega,
-#                                         'sidelength': self.sidelength,
-#                                         'samples': self.samples,
-#                                         'c_scale': self.c_scale,
-#                                         'ground_impedance': self.ground_impedance,
-#                                         'source_indices': source_indices,
-#                                         'bc_indx_dict': bc_indx_dict,
-#                                         'bc_indices': bc_indices}

@@ -539,7 +539,7 @@ def get_ISM_RIRs(room_coords,
               help='Room height maximum')
 @click.option('--max_order', default=11, type=click.IntRange(2, 15),
               help='Maximum order of image sources')
-@click.option('--sample_rate', default=16000, type=int,
+@click.option('--sample_rate', default=8000, type=int,
               help='Sample rate in samples/second')
 @click.option('--distributed_measurements', default=False, is_flag=True,
               help='Uniformly distributed arrayr')
@@ -565,7 +565,8 @@ def run_ISM(plot_array, plot_room, plot_rir,
         # room_coords = np.array([[0, 0], [1.2, 3.3], [2.4, 3.3], [3.6, 0]]).T
         room_coords = np.array(roomdim).T
         room_height = np.random.uniform(2.4, max_z)
-        rev_time = np.random.uniform(rt60 - rt60 / 2, rt60 + rt60 / 2)
+        # rev_time = np.random.uniform(rt60 - rt60 / 2, rt60 + rt60 / 2)
+        rev_time = rt60
 
         # set source, slightly offset from corner and assert that it is within
         # room boundaries

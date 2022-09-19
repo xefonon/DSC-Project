@@ -48,7 +48,7 @@ if device == 'cuda':
 )
 def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     config = {
-        'rir_time': 0.1,
+        'rir_time': 0.08,
         'check_point_dir': checkpoint_dir,
         'train_epochs': train_epochs,
         'lr': 1e-5,
@@ -76,7 +76,7 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     # %%
     """Training Data"""
     data = rirdata[:, :int(hparams.rir_time * fs)] # truncate
-    rirdata = rirdata/ np.max(abs(rirdata))
+    rirdata = rirdata/np.max(abs(rirdata))
     data = data / np.max(abs(data))
     # t = np.linspace(0, hparams.rir_time, int(hparams.rir_time * fs))  # Does not need normalisation if < 1 second
     t_ind = np.arange(0, int(hparams.rir_time * fs))
