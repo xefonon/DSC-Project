@@ -12,3 +12,9 @@ PINNs/PINN_checkpoints/
 PINNs/wandb/
 
 PINNs/SIREN_checkpoints/
+
+BPINN-numpyro/BPINN_checkpoints/
+
+BPINN-numpyro/wandb/
+
+PINNs/SIREN_torchmeta2/

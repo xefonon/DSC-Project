@@ -4,6 +4,7 @@ import pyroomacoustics as pra
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn import linear_model
+from pyDOE import lhs
 # from icecream import ic
 # import numba
 # from numba import jit
@@ -353,10 +354,10 @@ def get_ISM_RIRs(room_coords,
                  distributed_measurements=True,
                  array_base=True,
                  snr=45):
-    # grid_ref = np.asarray(reference_grid(21))
-    n_ref = 1000
-    grid_ref = disk_grid_fibonacci(n_ref, r = 1)
-    grid_ref = np.reshape(grid_ref, (3, n_ref))
+    grid_ref = np.asarray(reference_grid(50))
+    grid_ref = grid_ref.reshape(3, -1)
+    # n_ref =
+    # grid_ref = disk_grid_fibonacci(n_ref, r = 1)
 
 
     # room dimensions (corners in [x,y] meters)
@@ -373,21 +374,24 @@ def get_ISM_RIRs(room_coords,
 
     else:
         # get spherical array coords
-        grid = pra.doa.GridSphere(n_points=n_mics)
+        # grid = pra.doa.GridSphere(n_points=n_mics)
 
-        if array_base:
-            mask = np.argwhere(grid.z > -.7)
-            grid_measured = np.c_[robot_radius * np.array([grid.x[mask], grid.y[mask], grid.z[mask]])]
-            grid_measured = np.squeeze(grid_measured)
-            n_mics = grid_measured.shape[-1]
-        else:
-            grid_measured = np.c_[robot_radius * np.array([grid.x, grid.y, grid.z])]
+        # if array_base:
+        #     mask = np.argwhere(grid.z > -.7)
+        #     grid_measured = np.c_[robot_radius * np.array([grid.x[mask], grid.y[mask], grid.z[mask]])]
+        #     grid_measured = np.squeeze(grid_measured)
+        #     n_mics = grid_measured.shape[-1]
+        # else:
+        #     grid_measured = np.c_[robot_radius * np.array([grid.x, grid.y, grid.z])]
+        grid_measured = np.zeros((n_mics, 3))
+        grid_measured[:, :2] = 2 * lhs(2, n_mics) - 1
+        grid_fit = grid_measured.T
 
-        interp_ind = np.squeeze(np.argwhere(np.linalg.norm(grid_ref, axis = 0) < robot_radius))
+        # interp_ind = np.squeeze(np.argwhere(np.linalg.norm(grid_ref, axis = 0) < robot_radius))
 
-        plus_five_ind = np.random.choice(interp_ind, 5, replace = False)
-        grid_fit = np.concatenate((grid_measured, grid_ref[:, plus_five_ind]), axis = -1)
-        n_mics += 5
+        # plus_five_ind = np.random.choice(interp_ind, 5, replace = False)
+        # grid_fit = np.concatenate((grid_measured, grid_ref[:, plus_five_ind]), axis = -1)
+        # n_mics += 5
         # rir_fit = np.concatenate((array_rirs, ref_rirs[plus_five_ind]), axis = 0)
 
         # for disk reference shape:
@@ -583,7 +587,7 @@ def run_ISM(plot_array, plot_room, plot_rir,
 
         snr = None
         source_coords = list(np.asarray(source_coords) + np.array([multx * .001, multy * .001, .001]))
-        rirs_sphere, rirs_ref, gridsphere, grid_ref = get_ISM_RIRs(room_coords,
+        rirs_sphere, rirs_ref, grids_measured, grid_ref = get_ISM_RIRs(room_coords,
                                                                    room_height,
                                                                    source_coords,
                                                                    array_radius,
@@ -613,7 +617,7 @@ def run_ISM(plot_array, plot_room, plot_rir,
         # rir_sets["ref_loc_{}".format(lsf_number)] = grid_ref
         # save_paired_responses(rir_sets, data_dir, index= lsf_number)
         np.savez_compressed('./ISM_sphere.npz', array_data=rirs_sphere, reference_data=rirs_ref,
-                            grids_sphere=gridsphere, grid_reference=grid_ref,
+                            grids_measured=grids_measured, grid_reference=grid_ref,
                             snr=snr, rt60=rev_time, room_coords=room_coords,
                             room_height = room_height, source_coords = source_coords,
                             fs = sample_rate)

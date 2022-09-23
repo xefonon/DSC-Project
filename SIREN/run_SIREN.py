@@ -1,9 +1,9 @@
 import torch
 import wandb
 from torch.utils.data import DataLoader
-from aux_functions import (FCN, PINNDataset, construct_input_vec,
-                           plot_results, scan_checkpoint, save_checkpoint,
-                           load_checkpoint)
+from aux_functions_siren import (FCN, GreensFunAnalytical, construct_input_vec,
+                                 plot_results, scan_checkpoint, save_checkpoint,
+                                 load_checkpoint, WaveSource)
 from pathlib import Path
 import numpy as np
 import click
@@ -36,7 +36,7 @@ if device == 'cuda':
 )
 @click.option(
     "--train_epochs",
-    default=1e7,
+    default=1e6,
     type=int,
     help="Number of epochs for which to train PINN (in total)",
 )
@@ -51,14 +51,14 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
         'rir_time': 0.08,
         'check_point_dir': checkpoint_dir,
         'train_epochs': train_epochs,
-        'lr': 2e-5,
-        'layers': np.array([3, 100, 100, 100, 100, 100, 100, 100, 1]),
+        'lr': 1e-5,
+        'layers': np.array([3, 100, 100, 100, 100, 100, 100, 100, 100, 100, 1]),  # 9 hidden layers
         'batch_size': 90,
         'siren': siren,
-        'lambda_data': 100.,
-        'lambda_pde': 1e-2,
+        'lambda_data': 1.,
+        'lambda_pde': 1e-3,
         'lambda_bc': 0.,
-        'n_pde_samples': 15000
+        'n_pde_samples': 30000
     }
     wandb.init(config=config, project="PINN_sound_field")
 
@@ -76,26 +76,24 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     # %%
     """Training Data"""
     data = rirdata[:, :int(hparams.rir_time * fs)]  # truncate
-    # rirdata = rirdata / np.max(abs(rirdata))
-    # data = data / np.max(abs(data))
+    rirdata = rirdata / np.max(abs(rirdata))
+    data = data / np.max(abs(data))
     # t = np.linspace(0, hparams.rir_time, int(hparams.rir_time * fs))  # Does not need normalisation if < 1 second
-    t_ind = np.arange(1, int(hparams.rir_time * fs))
+    t_ind = np.arange(0, int(hparams.rir_time * fs))
     t = np.linspace(0., rirdata.shape[-1] / fs, rirdata.shape[-1])  # Does not need normalisation if < 1 second
     x_true = grid[0]
     y_true = grid[1]
     # boundary indices
-    # boundary_ind = np.argwhere(x_true ** 2 + y_true ** 2 > .9 ** 2)
+    boundary_ind = np.argwhere(x_true ** 2 + y_true ** 2 > .9 ** 2)
     # regular point indices
-    reg_ind = np.arange(0, grid.shape[-1])
-    # mask = np.ones(grid.shape[1], dtype=bool)
-    # mask[boundary_ind] = False
-    # reg_ind = np.argwhere(mask == True)
+    mask = np.ones(grid.shape[1], dtype=bool)
+    mask[boundary_ind] = False
+    reg_ind = np.argwhere(mask == True)
     # random interpolation indices
-    # interp_indx = np.random.choice(reg_ind.squeeze(-1), 20, replace=False)  # Randomly chosen points for Interior
+    interp_indx = np.random.choice(reg_ind.squeeze(-1), 20, replace=False)  # Randomly chosen points for Interior
     # add to boundary indices
-    # data_ind = np.vstack((boundary_ind, interp_indx[..., None])).squeeze(-1)
-    data_ind = np.random.choice(reg_ind, 130, replace=False)
-    boundary_ind = data_ind
+    data_ind = np.vstack((boundary_ind, interp_indx[..., None])).squeeze(-1)
+    # data_ind = np.random.choice(reg_ind.squeeze(-1), 850, replace=False)
     # data_ind = np.arange(0, len(x_true))
     # regular point grid
     mask = np.ones(grid.shape[1], dtype=bool)
@@ -103,9 +101,16 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     # grid_rest = grid[:, mask]
     # %%
 
+    # dataset = PINNDataset(data, x_true, y_true, t, data_ind, boundary_ind,
+    #                       t_ind, n_pde_samples=hparams.n_pde_samples)
+    dataset = WaveSource(sidelength= 18)
+    # total_batch_size = hparams.batch_size * len(x_true[data_ind])
     bounds = {'x': (-1, 1),
               'y': (-1, 1),
-              't': (0, hparams.rir_time)}
+              't': (0, 1)}
+    train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size,
+                                  shuffle=True,
+                                  pin_memory=True, num_workers=0)
 
     PINN = FCN(hparams.layers, bounds=bounds, device=device, siren=hparams.siren,
                lambda_data=hparams.lambda_data, lambda_pde=hparams.lambda_pde, lambda_bc=hparams.lambda_bc)
@@ -114,10 +119,7 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
     wandb.watch(PINN.dnn, PINN.loss_function, log='all')
 
     '''Optimization'''
-    gamma = 0.9  # final learning rate will be gamma * initial_lr
     optimizer = torch.optim.Adam(params, hparams.lr, betas=(0.9, 0.999), eps=1e-08, amsgrad=False)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2e5, gamma=gamma)
-
     'Neural Network Summary'
     print(PINN.dnn)
     # %%
@@ -137,51 +139,31 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
         last_epoch = state_dict_pinn["epoch"]
         optimizer.load_state_dict(state_dict_pinn["optim"])
 
-
-    # Dataset
-    dataset = PINNDataset(data, x_true, y_true, t, data_ind, boundary_ind,
-                          t_ind, n_pde_samples=hparams.n_pde_samples, counter = steps + 1)
-    # total_batch_size = hparams.batch_size * len(x_true[data_ind])
-    train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size,
-                                  shuffle=True,
-                                  pin_memory=True, num_workers=0)
-
+    gf = GreensFunAnalytical(1, 1, 1000, 100, 1e-2)
+    analytical_sol = gf.calculate()
+    xy_plt, t = gf.return_points()
+    t_indx_plt = (1000 * np.linspace(0.1, .5, 5)).astype(int)
     PINN.dnn.train()
     # t_indx_plt = (fs * np.array([0.005, 0.02, 0.035, 0.05, 0.1])).astype(int)
-    t_indx_plt = (fs * np.linspace(.01, hparams.rir_time, 5)).astype(int)
     # t_indx_plt = (fs * np.array([0.005, 0.01, 0.015])).astype(int)
-    xyt_plt, p_plt = construct_input_vec(rirdata, x_true, y_true, t, t_ind=t_indx_plt)
+    xyt_plt, p_plt = construct_input_vec(analytical_sol, xy_plt[0], xy_plt[1], t, t_ind=t_indx_plt)
     for epoch in range(max(0, last_epoch), train_epochs):
         for i, batch in enumerate(train_dataloader):
-            data_input = batch['collocation_train']
-            pde_input = batch['collocation_pde']
-            ic_input = batch['collocation_ic']
-            p_data = batch['pressure_batch']
-            max_t = batch['max_t'].numpy().max()
+            model_input, gt = batch
             # p_test = batch['pressure_all']
             optimizer.zero_grad()
-            loss_total, loss_data, loss_pde, loss_bc, loss_ic = PINN.SGD_step(data_input.to(device),
-                                                                              pde_input.to(device),
-                                                                              ic_input.to(device),
-                                                                              p_data.to(device),
-                                                                              )
+            loss_total, loss_dir, loss_neu, loss_wave = PINN.SGD_step(model_input, gt)
             optimizer.step()
-            scheduler.step()
-            if steps % 100 == 0:
+            if steps % 20 == 0:
                 wandb.log({"total_loss": loss_total,
-                           "data_loss": loss_data,
-                           "PDE_loss": loss_pde,
-                           "BCs_loss": loss_bc,
-                           "ICs_loss" : loss_ic})
-            if steps % int(1000) == 0:
-                fig, errors = plot_results(xyt_plt, p_plt, PINN)
+                           "NeumanBC_loss": loss_neu,
+                           "DirichletBC_loss": loss_dir,
+                           "WaveEq_loss" : loss_wave})
+            if steps % int(100) == 0:
+                fig = plot_results(xyt_plt, p_plt.reshape(5, -1), PINN)
                 wandb.log({"Sound_Fields": wandb.Image(fig)})
                 plt.close('all')
-                for ii, error in enumerate(errors):
-                    wandb.log({
-                        f"error - t: {xyt_plt[ii, 2, 0]:.3f} s": error,
-                        "steps": steps})
-            if steps % int(1000) == 0:
+            if steps % int(500) == 0:
                 checkpoint_path = "{}/PINN_{:08d}".format(checkpoint_dir, steps)
                 save_checkpoint(checkpoint_dir,
                                 checkpoint_path,
@@ -194,7 +176,7 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren):
                                 remove_below_step=steps // 2
                                 )
             steps += 1
-            print(f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}, max_t: {max_t:.2}', end='',
+            print(f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}', end='',
                   flush=True)
 
 

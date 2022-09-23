@@ -1,0 +1,13 @@
+name: DSC-Project
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - cudatoolkit=11.3
+  - torchvision
+  - torchaudio
+  - scikit-learn
+  - matplotlib
+  - h5py
+  - tqdm
+  - jupyter
