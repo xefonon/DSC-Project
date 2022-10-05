@@ -340,7 +340,8 @@ def get_random_np_boolean_mask( n_true_elements, total_n_elements):
 
 def plot_sf(P, x, y, f=None, ax=None, name=None, save=False, add_meas=None,
             clim=None, tex=False, cmap=None, normalise=True,
-            colorbar = False, cbar_label = '', cbar_loc = 'bottom'):
+            colorbar = False, cbar_label = '', cbar_loc = 'bottom',
+            interpolated = True):
     """
     Plot spatial soundfield normalised amplitude
     --------------------------------------------
@@ -377,8 +378,18 @@ def plot_sf(P, x, y, f=None, ax=None, name=None, save=False, add_meas=None,
     dy = 0.5 * Y.ptp() / Pmesh.size
     if ax is None:
         _, ax = plt.subplots()  # create figure and axes
-    im = ax.imshow(Pmesh.real, cmap=cmap, origin='upper',
-                   extent=[X.min() - dx, X.max() + dx, Y.min() - dy, Y.max() + dy])
+    if interpolated:
+        im = ax.imshow(Pmesh.real, cmap=cmap, origin='upper',
+                       extent=[X.min() - dx, X.max() + dx, Y.min() - dy, Y.max() + dy])
+        ax.invert_xaxis()
+    else:
+        if clim is not None:
+            lm1, lm2 = clim
+        else:
+            lm1, lm2 = None, None
+        im = ax.scatter(x, y, c=Pvec.real,
+                        cmap=cmap, alpha=1., s=10, vmin = lm1, vmax = lm2)
+        ax.set_aspect('equal')
     ax.set_ylabel('y [m]')
     ax.set_xlabel('x [m]')
     if clim is not None:
@@ -781,18 +792,7 @@ def scale_linear_regression( yhat, y):
         mu = np.squeeze(reg.intercept_)
         return sigma, mu
 
-# def nmse(y_meas, y_predicted, axis=(-1,)):
-#     norm = 1
-#     for i in axis:
-#         norm *= y_meas.shape[i]
-#     nmse = np.sum(np.abs(y_meas - y_predicted)**2 /
-#                   np.abs(y_meas)**2, axis=axis) / norm
-#     return nmse
-
 def nmse(y_meas, y_predicted):
     num = np.sum(abs(y_meas - y_predicted)**2)
     denom = np.sum(abs(y_meas)**2)
     return 10*np.log10(num/denom)
-
-for i in range(10):
-    print(f'\rsteps: {i}, loss: {1.2*i:.3}', end='', flush=True)

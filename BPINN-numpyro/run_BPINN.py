@@ -34,10 +34,10 @@ if os.path.isdir(checkpoint_dir):
     cp_pinn = scan_checkpoint(checkpoint_dir, "PINN_")
 
 nn_params = {'h0': 3,
-             'h1': 128,
-             'h2': 128,
-             'h3': 128,
-             'h4': 128,
+             'h1': 256,
+             'h2': 256,
+             'h3': 256,
+             'h4': 256,
              'sigma': .1,
              'device' : device}
 
@@ -113,14 +113,17 @@ for step in range(n_steps):
                 "steps": step})
     if step % int(10000) == 0:
         checkpoint_path = "{}/PINN_{:08d}".format(checkpoint_dir, steps)
-        save_checkpoint(checkpoint_dir,
-                        checkpoint_path,
-                        {
-                            "net": model.net.state_dict(),
-                            "steps": steps,
-                        },
-                        remove_below_step=steps // 2
-                        )
+        # save_checkpoint(checkpoint_dir,
+        #                 checkpoint_path,
+        #                 {
+        #                     "net": model.net.state_dict(),
+        #                     "steps": steps,
+        #                 },
+        #                 remove_below_step=steps // 2
+        #                 )
+        torch.save({"model": model.state_dict(), "guide": guide}, checkpoint_path)
+        pyro.get_param_store().save(checkpoint_path + "_pyromodelparams")
+
     if step % 500 == 0:
         print("[%d] ELBO: %.1f" % (step, elbo))
         wandb.log({"ELBO": elbo})
@@ -128,9 +131,14 @@ for step in range(n_steps):
     steps += 1
 # %%
 
-num_samples = 10000
-predictive = Predictive(model, guide=guide, num_samples=num_samples, return_sites=["obs1", "obs2"])
-samples_svi = predictive(Xref)
+num_samples = 2
+predictive = Predictive(model, guide=guide, num_samples=num_samples, return_sites=["x", "xx"])
+samples_svi = predictive(Xref[:10000])
 #%%
 pred_mean = samples_svi["obs1"].detach().mean(axis=0).squeeze(-1)
 pred_std = samples_svi["obs1"].detach().std(axis=0).squeeze(-1)
+
+# saved_model_dict = torch.load("mymodel.pt")
+# model.load_state_dict(saved_model_dict['model'])
+# guide = saved_model_dict['guide']
+# pyro.get_param_store().load("mymodelparams.pt")

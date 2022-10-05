@@ -17,51 +17,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from scipy.linalg import LinAlgWarning
 warnings.filterwarnings(action='ignore', category=LinAlgWarning, module='sklearn')
 
-def save_paired_responses(dic, filepath, index, sample_len = 16384):
-    with open('sound_field_metadata.txt', 'a') as f:
-        f.write(80*'='+'\n')
-        f.write(f'Sound Field {index}\n')
-        f.write(80*'='+'\n')
-        for key, value in dic.items():
-            if isinstance(value, (list, np.ndarray)):
-                if key == 'pm_{}'.format(index):
-                    f.write('n_mics:%s\n' % (np.array(value).shape[-1]))
-                else:
-                    pass
-            else:
-                f.write('%s:%s\n' % (key, value))
-        f.close()
-    for key, item in dic.items():
-        if key == 'prec_{}'.format(index):
-            prec = np.asarray(item)
-        if key == 'pref_{}'.format(index):
-            pref = np.asarray(item)
-    for ii in range(len(pref)):
-        np.savez_compressed(filepath + f'/responses_ISM_sf_{index}_{ii}', pref = pref[ii], prec = prec[ii])
-
-# @jit(nopython=True)
-def stack_real_imag_H(mat):
-    mat_stack = np.concatenate(
-        (
-            np.concatenate((mat.real, -mat.imag), axis=-1),
-            np.concatenate((mat.imag, mat.real), axis=-1),
-        ),
-        axis=0,
-    )
-    return mat_stack
-
-# @jit(nopython=True)
-def _build_sensing_mat(kx, ky, kz, X, Y, Z):
-    # H = np.exp(-1j * (np.einsum('ij,k -> ijk', kx, X) + \
-    #                   np.einsum('ij,k -> ijk', ky, Y) + \
-    #                   np.einsum('ij,k -> ijk', kz, Z)))
-    # return np.transpose(H, axes=[0, 2, 1])
-    H = np.exp(-1j * (np.outer(kx, X) + \
-                      np.outer(ky, Y) + \
-                      np.outer(kz, Z)))
-    H = np.expand_dims(H, axis=0)
-    return H
-
 # @jit(nopython=True)
 def grid_sphere_fib(n_points):
     """
@@ -107,149 +62,6 @@ def save_h5_from_dict(dictionary, savepath = '/TD_point_sources.h5'):
             f[key] = dictionary[key]
         f.close()
 
-def wavenumber( f=1000, n_PW=2000, c=343):
-    k = 2 * np.pi * f / c
-    k_grid = k*grid_sphere_fib(int(n_PW))
-    return k_grid.T
-
-def build_sensing_mat( kx, ky, kz, X, Y, Z):
-    H = _build_sensing_mat(kx, ky, kz, X, Y, Z)
-    return np.transpose(H, axes=[0, 2, 1])
-
-def get_sensing_mat( f, n_pw, X, Y, Z, k_samp=None, c = None):
-    # Basis functions for coefficients
-    if c is None:
-        c = 343
-    if k_samp is None:
-        k_samp = wavenumber(f, n_pw, c)
-    kx, ky, kz = k_samp
-    if kx.ndim < 2:
-        kx = kx[np.newaxis, ...]
-        ky = ky[np.newaxis, ...]
-        kz = kz[np.newaxis, ...]
-    k_out = [kx, ky, kz]
-    H = build_sensing_mat(kx, ky, kz, X, Y, Z)
-    return H, k_out
-
-def Ridge_regression(H, p, n_plwav=None, cv=True):
-    """
-    Titkhonov - Ridge regression for Soundfield Reconstruction
-    Parameters
-    ----------
-    H : Transfer mat.
-    p : Measured pressure.
-    n_plwav : number of plane waves.
-
-    Returns
-    -------
-    q : Plane wave coeffs.
-    alpha_titk : Regularizor
-    """
-    if cv:
-        reg = linear_model.RidgeCV(cv=5, alphas=np.geomspace(1e-1, 1e-7, 30),
-                                   fit_intercept=True, normalize = True)
-    else:
-        alpha_titk = 2.8e-5
-        reg = linear_model.Ridge(alpha=alpha_titk, fit_intercept = True, normalize = True)
-
-    # gcv_mode = 'eigen')
-    # reg = linear_model.RidgeCV()
-    if n_plwav is None:
-        n_plwav = H.shape[-1]
-    if H.dtype == complex:
-        H = stack_real_imag_H(H)
-    if p.dtype == complex:
-        p = np.concatenate((p.real, p.imag))
-
-    reg.fit(H, p)
-    q = reg.coef_[:n_plwav] + 1j * reg.coef_[n_plwav:]
-    try:
-        alpha_titk = reg.alpha_
-    except:
-        pass
-    # Predict
-    return q, alpha_titk
-
-def reconstruct_FR(FR, n_pw, freq, grid, grid_ref):
-    p_rec_FR = []
-    pbar = tqdm(freq)
-    for ii, ff in enumerate(pbar):
-        pm = FR[:, ii]
-        H, k = get_sensing_mat(ff,
-                               n_pw,
-                               grid[0],
-                               grid[1],
-                               grid[2])
-
-        Href, _ = get_sensing_mat(ff,
-                                  n_pw,
-                                  grid_ref[0],
-                                  grid_ref[1],
-                                  grid_ref[2],
-                                  k_samp=k)
-
-        coeffs, alpha_ = Ridge_regression(np.squeeze(H), pm, cv=True)
-        p_rec_FR.append(np.squeeze(Href) @ coeffs)
-        pbar.set_description('Reconstructing f: {} Hz'.format(ff))
-    return np.fft.irfft(np.array(p_rec_FR).T)
-
-# @numba.njit
-def get_shp_mesh(azim_res, pol_res, rad, plot=False):
-    """
-    Get spherical mesh in cartesian coordinates
-    ----------------------------------------------------------------
-    Args:
-        azim_res : azimuth measurement resolution (azim_res = 360/n)
-        pol_res  : polar angle resolution (pol_res = 180/n)
-        rad      : sphere radius
-
-    Returns:
-        X_meas, Y_meas, Z_meas : cartesian coordinates as a grid
-        phi, theta             : azimuth, polar angles as a grid
-    ----------------------------------------------------------------
-    """
-    r = rad
-    pi = np.pi
-    cos = np.cos
-    sin = np.sin
-    azim_slice = np.complex(0, 360 // azim_res)
-    pol_slice = np.complex(0, 360 // pol_res)
-    phi, theta = np.mgrid[0.0:2.0 * pi:azim_slice, 0.0:pi:pol_slice]  # azimuth, polar
-    X_meas = r * sin(phi) * cos(theta)
-    Y_meas = r * sin(phi) * sin(theta)
-    Z_meas = r * cos(phi)
-    if plot:
-        plt.figure()
-        ax = plt.gca(projection="3d")
-        ax.plot_wireframe(X_meas, Y_meas, Z_meas, color='hotpink', alpha=0.3, rstride=1, cstride=1)
-        ax.set_xlim([-2 * rad, 2 * rad])
-        ax.set_ylim([-2 * rad, 2 * rad])
-        ax.set_zlim([-rad, rad])
-        ax.grid()
-        ax.scatter(X_meas, Y_meas, Z_meas)
-        plt.tight_layout()
-        plt.show()
-    return X_meas, Y_meas, Z_meas, phi, theta
-
-
-# @numba.njit
-def get_circ_mesh(max_radius, height, N_steps_rad, N_steps_theta, plot=False):
-    # res_theta = np.complex(0, N_steps_theta)
-    # res_rad = np.complex(0, N_steps_rad)
-    # grid_theta, grid_r  = np.mgrid[-np.pi:np.pi:res, 0:0.5:res]
-    R = np.linspace(0., max_radius, N_steps_rad)
-    theta = np.linspace(-np.pi, np.pi, N_steps_theta)
-    x = np.outer(R, np.cos(theta))
-    y = np.outer(R, np.sin(theta))
-    z = height * np.ones_like(x)
-    # if plot:
-    #     fig = plt.figure()
-    #     ax = fig.add_subplot(111, projection='3d')
-    #     ax.scatter(x,y,z) # z in case of disk which is parallel to XY plane is constant and you can directly use h
-    #     fig.show()
-    return x, y, z
-
-
 def reference_grid(steps, xmin=-.7, xmax=.7, z=0):
     x = np.linspace(xmin, xmax, steps)
     y = np.linspace(xmin, xmax, steps)
@@ -257,7 +69,6 @@ def reference_grid(steps, xmin=-.7, xmax=.7, z=0):
     X, Y = np.meshgrid(x, y)
     Z = z * np.ones(X.shape)
     return X, Y, Z
-
 
 def adjustSNR(sig, snrdB=40, td = True):
     """
@@ -342,7 +153,6 @@ def disk_grid_fibonacci(n, r, c = (0,0), z=None):
 def get_ISM_RIRs(room_coords,
                  room_height,
                  source_coords,
-                 robot_radius,
                  n_mics,
                  fs,
                  rt60,
@@ -352,7 +162,6 @@ def get_ISM_RIRs(room_coords,
                  plot_array=False,
                  raytrace=True,
                  distributed_measurements=True,
-                 array_base=True,
                  snr=45):
     grid_ref = np.asarray(reference_grid(50))
     grid_ref = grid_ref.reshape(3, -1)
@@ -370,7 +179,7 @@ def get_ISM_RIRs(room_coords,
         gridx = np.random.uniform(low=-room_dim[0] + 0.01, high=room_dim[0] - 0.01, size=n_mics)
         gridy = np.random.uniform(low=-room_dim[1] + 0.01, high=room_dim[1] - 0.01, size=n_mics)
         gridz = np.random.uniform(low=-room_dim[2] + 0.01, high=room_dim[2] - 0.01, size=n_mics)
-        grid_measured = np.c_[robot_radius * np.array([gridx, gridy, gridz])]
+        grid_measured = np.c_[np.array([gridx, gridy, gridz])]
 
     else:
         # get spherical array coords
@@ -541,7 +350,7 @@ def get_ISM_RIRs(room_coords,
               help='Given from cluster job number, acts as a seed for random numbers')
 @click.option('--max_Z', default=3, type=click.FloatRange(2.4, 5.),
               help='Room height maximum')
-@click.option('--max_order', default=11, type=click.IntRange(2, 15),
+@click.option('--max_order', default=0, type=click.IntRange(0, 15),
               help='Maximum order of image sources')
 @click.option('--sample_rate', default=8000, type=int,
               help='Sample rate in samples/second')
@@ -590,7 +399,6 @@ def run_ISM(plot_array, plot_room, plot_rir,
         rirs_sphere, rirs_ref, grids_measured, grid_ref = get_ISM_RIRs(room_coords,
                                                                    room_height,
                                                                    source_coords,
-                                                                   array_radius,
                                                                    n_mics,
                                                                    sample_rate,
                                                                    rev_time,
@@ -599,7 +407,6 @@ def run_ISM(plot_array, plot_room, plot_rir,
                                                                    plot_room=plot_room,
                                                                    plot_array=plot_array,
                                                                    raytrace=raytrace,
-                                                                   array_base=False,
                                                                    snr=snr,
                                                                    distributed_measurements=distributed_measurements
                                                                    )
