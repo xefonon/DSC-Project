@@ -7,6 +7,7 @@ __pycache__/
 
 *.xml
 
+<<<<<<< Updated upstream
 PINNs/PINN_checkpoints/
 
 PINNs/wandb/
@@ -18,3 +19,6 @@ BPINN-numpyro/BPINN_checkpoints/
 BPINN-numpyro/wandb/
 
 PINNs/SIREN_torchmeta2/
+=======
+PINNs/wandb/
+>>>>>>> Stashed changes
