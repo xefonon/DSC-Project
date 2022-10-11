@@ -1,4 +1,5 @@
 import sys
+
 sys.path.append('../')
 import torch
 import torch.autograd as autograd  # computation graph
@@ -22,7 +23,7 @@ from pathlib import Path
 from sklearn.neighbors import NearestNeighbors
 
 
-def subsample_gridpoints(grid, subsample = 5):
+def subsample_gridpoints(grid, subsample=5):
     r0 = grid.mean(axis=-1)
     tempgrid = grid - r0[:, None]
     xmin, xmax = round(tempgrid[0].min(), 3), round(tempgrid[0].max(), 3)
@@ -33,6 +34,7 @@ def subsample_gridpoints(grid, subsample = 5):
     distances, indices = nbrs.kneighbors(newgrid.T)
     return grid[:, indices.squeeze(-1)], indices.squeeze(-1)
 
+
 def reference_grid(steps, xmin=-.7, xmax=.7):
     x = np.linspace(xmin, xmax, steps)
     y = np.linspace(xmin, xmax, steps)
@@ -40,6 +42,7 @@ def reference_grid(steps, xmin=-.7, xmax=.7):
     X, Y = np.meshgrid(x, y)
     gridnew = np.vstack((X.reshape(1, -1), Y.reshape(1, -1)))
     return gridnew
+
 
 def speed_of_sound(T):
     """
@@ -55,8 +58,8 @@ def speed_of_sound(T):
     c = 20.05 * np.sqrt(273.15 + T)
     return c
 
-def load_measurement_data(filename):
 
+def load_measurement_data(filename):
     with h5py.File(filename, "r") as f:
         data_keys = f.keys()
         meta_data_keys = f.attrs.keys()
@@ -68,19 +71,67 @@ def load_measurement_data(filename):
         f.close()
     return data_dict
 
+
 class standardize_rirs:
-    def __init__(self, data, device = 'cuda'):
+    def __init__(self, data, device='cuda'):
         self.data = data
         self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
 
         self.mean = self.tfnp(data.mean()[None, None])
         self.std = self.tfnp(data.std()[None, None])
-    def forward_rir(self, input):
-        return (input - self.mean)/self.std
-    def backward_rir(self, input):
-        return input*self.std + self.mean
 
-def get_measurement_vectors(filename, real_data = True, subsample_points = 10):
+    def forward_rir(self, input):
+        return (input - self.mean) / self.std
+
+    def backward_rir(self, input):
+        return input * self.std + self.mean
+
+
+# class standardize_rirs:
+#     def __init__(self, data, device='cuda'):
+#         self.data = data
+#         self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
+#
+#         self.mean = self.tfnp(data.mean(axis=0)[None, :])
+#         self.std = self.tfnp(data.std(axis=0)[None, :])
+#
+#     def forward_rir(self, input):
+#         return (input - self.mean) / self.std
+#
+#     def backward_rir(self, input):
+#         return input * self.std + self.mean
+
+class unit_norm_normalization:
+    def __init__(self, data, device='cuda'):
+        self.data = data
+        self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
+        self.l2_norm = lambda x: np.linalg.norm(x)
+
+        self.norm = self.tfnp(self.l2_norm(data)[None, None])
+
+    def forward_rir(self, input):
+        return input / self.norm
+
+    def backward_rir(self, input):
+        return input * self.norm
+
+
+class normalize_rirs:
+    def __init__(self, data, device='cuda'):
+        self.data = data
+        self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
+        self.maxabs = lambda x: np.max(abs(x))
+
+        self.norm = self.tfnp(self.maxabs(data)[None, None]/.95)
+
+    def forward_rir(self, input):
+        return input / self.norm
+
+    def backward_rir(self, input):
+        return input * self.norm
+
+
+def get_measurement_vectors(filename, real_data=True, subsample_points=10):
     if real_data:
         data_dict = load_measurement_data(filename)
         refdata = data_dict['RIRs_bottom']
@@ -90,8 +141,8 @@ def get_measurement_vectors(filename, real_data = True, subsample_points = 10):
         grid = data_dict['grid_bottom']
         measureddata = data_dict['RIRs_bottom']
         # grid_measured = data_dict['grid_bottom']
-        grid -= grid.mean(axis = -1)[:, None]
-        grid_measured, indcs = subsample_gridpoints(grid, subsample= subsample_points)
+        grid -= grid.mean(axis=-1)[:, None]
+        grid_measured, indcs = subsample_gridpoints(grid, subsample=subsample_points)
         measureddata = measureddata[indcs]
 
     else:
@@ -118,12 +169,14 @@ def save_checkpoint(directory, filepath, obj, remove_below_step=None):
         print("\nRemoving checkpoints below step ", remove_below_step)
         remove_checkpoint(directory, remove_below_step)
 
+
 def scan_checkpoint(cp_dir, prefix):
     pattern = os.path.join(cp_dir, prefix + "????????")
     cp_list = glob.glob(pattern)
     if len(cp_list) == 0:
         return None
     return sorted(cp_list)[-1]
+
 
 def load_checkpoint(filepath, device):
     assert os.path.isfile(filepath)
@@ -132,6 +185,7 @@ def load_checkpoint(filepath, device):
     print("Complete.")
     return checkpoint_dict
 
+
 def remove_checkpoint(cp_dir, delete_below_steps=1000):
     filelist = [f for f in os.listdir(cp_dir) if f.startswith("PINN")]
     for f in filelist:
@@ -139,7 +193,8 @@ def remove_checkpoint(cp_dir, delete_below_steps=1000):
         if int(number) < delete_below_steps:
             os.remove(os.path.join(cp_dir, f))
 
-def construct_input_vec(rirdata, x_true, y_true, t, data_ind = None, t_ind = None):
+
+def construct_input_vec(rirdata, x_true, y_true, t, data_ind=None, t_ind=None):
     if data_ind is not None:
         rirdata = rirdata[data_ind]
         x_true = x_true[data_ind]
@@ -153,30 +208,35 @@ def construct_input_vec(rirdata, x_true, y_true, t, data_ind = None, t_ind = Non
         collocation.append(np.stack([x_true, y_true, tt], axis=0))
     return np.array(collocation), rirdata
 
+
 def plot_results(collocation_data, rirdata, PINN):
     Nplots = collocation_data.shape[0]
     Pred_pressure = []
     error_vecs = []
-    relative_errors = []
+    mean_square_errors = []
+    square_errors = []
     tfnp = lambda x: torch.from_numpy(x).float().to(PINN.device)
 
     for n in range(Nplots):
-        error_vec, relative_error, p_pred = PINN.test(tfnp(collocation_data[n]), tfnp(rirdata[:,n]))
+        error_vec, mean_square_error, square_error, p_pred = PINN.test(tfnp(collocation_data[n]), tfnp(rirdata[:, n]))
         Pred_pressure.append(p_pred.squeeze(0))
         error_vecs.append(error_vec)
-        relative_errors.append(relative_error)
+        mean_square_errors.append(mean_square_error)
+        square_errors.append(square_error)
     fig, axes = plt.subplots(nrows=3, ncols=Nplots, sharex=True, sharey=True)
-    error_vec_minmax = (np.array(error_vecs).min(), np.array(error_vecs).min()+ 1.)
-    p_pred_minmax = (np.array(Pred_pressure).min(),(np.array(Pred_pressure).max()+ rirdata.max())/2)
-    p_true_minmax = (rirdata.min(), (np.array(Pred_pressure).max()+ rirdata.max())/2)
+    error_vec_minmax = (np.array(error_vecs).min(),
+                        np.minimum(np.array(error_vecs).max(),
+                                   np.maximum(1., np.array(error_vecs).min() + 1e-5)))
+    p_pred_minmax = (np.array(Pred_pressure).min(), np.array(Pred_pressure).max() + np.finfo(np.float32).eps)
+    p_true_minmax = (rirdata.min(), rirdata.max() + np.finfo(np.float32).eps)
     for i, ax in enumerate(axes[0]):
         if i == 2:
             name = 'Predicted - \n'
         else:
             name = ''
         ax, im = plot_sf(Pred_pressure[i], collocation_data[i, 0], collocation_data[i, 1],
-                        ax=ax, name= name +'t = {:.3f}s'.format(collocation_data[i, 2, 0]),
-                        clim= p_pred_minmax, normalise = False)
+                         ax=ax, name=name + 't = {:.3f}s'.format(collocation_data[i, 2, 0]),
+                         clim=p_pred_minmax, normalise=False)
         if i != 0:
             ax.set_ylabel('')
     for i, ax in enumerate(axes[1]):
@@ -184,9 +244,9 @@ def plot_results(collocation_data, rirdata, PINN):
             name = 'True'
         else:
             name = ''
-        ax, im2 = plot_sf(rirdata[:,i], collocation_data[i, 0], collocation_data[i, 1],
-                        ax=ax, name = name,
-                        clim = p_true_minmax, normalise = False)
+        ax, im2 = plot_sf(rirdata[:, i], collocation_data[i, 0], collocation_data[i, 1],
+                          ax=ax, name=name,
+                          clim=p_true_minmax, normalise=False)
         if i != 0:
             ax.set_ylabel('')
     for i, ax in enumerate(axes[2]):
@@ -195,7 +255,7 @@ def plot_results(collocation_data, rirdata, PINN):
         else:
             name = ''
         ax, im3 = plot_sf(error_vecs[i], collocation_data[i, 0], collocation_data[i, 1],
-                        ax=ax, name = name, clim = error_vec_minmax, cmap = 'hot', normalise = False)
+                          ax=ax, name=name, clim=error_vec_minmax, cmap='hot', normalise=False)
         if i != 0:
             ax.set_ylabel('')
     fig.subplots_adjust(right=0.8)
@@ -208,12 +268,12 @@ def plot_results(collocation_data, rirdata, PINN):
     cbar_ax3 = fig.add_axes([0.82, 0.11, 0.02, 0.2])
     fig.colorbar(im3, cax=cbar_ax3)
 
+    return fig, np.array(mean_square_errors), np.array(square_errors).sum(axis=0).mean(),
 
-    return fig, np.array(relative_errors)
 
 #  Deep Neural Network
 class DNN(nn.Module):
-    def __init__(self, layers, lb, ub, siren = True):
+    def __init__(self, layers, lb, ub, siren=True):
         super().__init__()  # call __init__ from parent class
         self.siren = siren
         'activation function'
@@ -238,7 +298,7 @@ class DNN(nn.Module):
             #                 w0_initial = 30.,                 # different signals may require different omega_0 in the first layer - this is a hyperparameter
             #                 w0 = 1.
             #             )
-            self.net = SingleBVPNet(out_features= 1, in_features= 3, hidden_features= 512, num_hidden_layers= 3)
+            self.net = SingleBVPNet(out_features=1, in_features=3, hidden_features=512, num_hidden_layers=3)
         else:
             self.linears = nn.ModuleList([nn.Linear(layers[i], layers[i + 1]) for i in range(len(layers) - 1)])
             'Xavier Normal Initialization'
@@ -249,6 +309,7 @@ class DNN(nn.Module):
                 nn.init.zeros_(self.linears[i].bias.data)
 
     'foward pass'
+
     def forward(self, input):
         batch_size = input.shape[0]
         g = input.clone()
@@ -270,7 +331,7 @@ class DNN(nn.Module):
         input_preprocessed = torch.stack((x, y, t), dim=-1).view(-1, 3)
         z = self.scaling(input_preprocessed)
         if self.siren:
-            p_out = self.net(z) # z: [batchsize x 3]
+            p_out = self.net(z)  # z: [batchsize x 3]
         else:
             for i in range(len(self.layers) - 2):
                 z = self.linears[i](z)
@@ -288,58 +349,57 @@ class FCN():
                  layers,
                  bounds,
                  device=None,
-                 siren = True,
-                 lambda_data = 1.,
-                 lambda_pde = 1e-4,
-                 lambda_bc = 1e-2,
-                 c = 343.,
-                 scaler = None):
+                 siren=True,
+                 lambda_data=1.,
+                 lambda_pde=1e-4,
+                 lambda_bc=1e-2,
+                 lambda_ic=1e-2,
+                 loss_fn='mae',
+                 c=343.,
+                 scaler=None):
         if device is None:
             self.device = 'cpu'
         else:
             self.device = device
-        # self.loss_function = nn.MSELoss(reduction='mean')
-        # self.loss_function = nn.MSELoss(reduction='sum')
-        self.loss_function = nn.L1Loss(reduction='mean')
+        if loss_fn in ['mse', 'MSE']:
+            self.loss_function = nn.MSELoss(reduction='mean')
+        else:
+            self.loss_function = nn.L1Loss(reduction='mean')
         'Initialize iterator'
         self.iter = 0
         self.lambda_data = lambda_data
         self.lambda_pde = lambda_pde
         self.lambda_bc = lambda_bc
+        self.lambda_ic = lambda_ic
         self.siren = siren
         self.scaler = scaler
         'speed of sound'
         self.c = c
-        # self.c = 343. / max(self.xmax, self.ymax) * self.tmax
 
         (self.xmin, self.xmax) = bounds['x']
         (self.ymin, self.ymax) = bounds['y']
         (self.tmin, self.tmax) = bounds['t']
 
-        # self.xmin /=self.c
-        # self.xmax /=self.c
-        # self.ymin /=self.c
-        # self.ymax /=self.c
-        self.tmax *=self.c
-        self.tmin *=self.c
+        self.tmax *= self.c
+        self.tmin *= self.c
 
         self.lb = torch.Tensor([self.xmin, self.ymin, self.tmin]).to(self.device)
         self.ub = torch.Tensor([self.xmax, self.ymax, self.tmax]).to(self.device)
         'Call our DNN'
-        self.dnn = DNN(layers, lb=self.lb, ub= self.ub, siren = siren).to(device)
+        self.dnn = DNN(layers, lb=self.lb, ub=self.ub, siren=siren).to(device)
 
     def cylindrical_coords(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
-        r = torch.sqrt(x**2 + y**2)
+        r = torch.sqrt(x ** 2 + y ** 2)
         phi = torch.atan2(y, x)
         return r, phi
 
-    def loss_data(self, input, pm, t_ind = None):
+    def loss_data(self, input, pm, use_log_scale=False):
         g = input.clone()
         g = self.scale_t(g)
         g.requires_grad = True
-
         loss_u = self.loss_function(self.dnn(g), pm)
+        # if use_log_scale:
 
         return loss_u
 
@@ -350,7 +410,6 @@ class FCN():
         g.requires_grad = True
 
         pnet = self.dnn(g)
-        # pnetscaled = self.dnn(gscaled)
 
         p_r_t = \
             autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
@@ -359,28 +418,19 @@ class FCN():
         p_rr_tt = \
             autograd.grad(p_r_t.view(-1, 1), g, torch.ones(input.view(-1, 1).shape).to(self.device),
                           create_graph=True)[0]
-        # p_r_t_scaled = \
-        #     autograd.grad(pnetscaled.view(-1, 1), gscaled, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-        #                   retain_graph=True,
-        #                   create_graph=True)[0]
-        # p_rr_tt_scaled = \
-        #     autograd.grad(p_r_t_scaled.view(-1, 1), gscaled, torch.ones(input.view(-1, 1).shape).to(self.device),
-        #                   create_graph=True)[0]
-        #
         p_xx = p_rr_tt[:, [0]]
         p_yy = p_rr_tt[:, [1]]
         p_tt = p_rr_tt[:, [2]]
 
         # given that x, y are scaled here so that x' = x/c and y' = y/c, then c = 1
         # f = p_tt - self.c * (p_xx + p_yy)
-        f = p_xx + p_yy - 1.*p_tt
+        f = p_xx + p_yy - 1. * p_tt
 
-        loss_f = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
+        loss_f = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
 
         return loss_f
 
     def loss_bc(self, input):
-        # x,y,t = input
         g = input.clone()
         g = self.scale_t(g)
         g.requires_grad = True
@@ -389,15 +439,16 @@ class FCN():
         cos_phi = torch.cos(phi)
         pnet = self.dnn(g)
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-                          create_graph=True)[0]
+                                create_graph=True)[0]
         p_x = p_x_y_t[:, [0]].flatten()
         p_y = p_x_y_t[:, [1]].flatten()
         dp_dt = p_x_y_t[:, [2]].flatten()
         dp_dr = sin_phi * p_y + cos_phi * p_x
         # Sommerfeld radiation condition (eq. 4.5.5 - "Acoustics" - Allan D. Pierce)
         # f = r * (dp_dr + 1 / self.c * dp_dt)
-        f = r * (dp_dr + dp_dt)
-        bcs_loss = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
+        # f = r * (dp_dr + dp_dt)
+        f = dp_dr + dp_dt
+        bcs_loss = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
         return bcs_loss
 
     def loss_ic(self, input):
@@ -407,10 +458,10 @@ class FCN():
 
         pnet = self.dnn(g)
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-                          create_graph=True)[0]
+                                create_graph=True)[0]
         dp_dt = p_x_y_t[:, [2]].flatten()
         f = pnet + dp_dt
-        ics_loss = self.loss_function(f.view(-1,1), torch.zeros_like(f.view(-1,1)))
+        ics_loss = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
         return ics_loss
 
     def loss(self, input_data, input_pde, input_ic, pm):
@@ -422,7 +473,8 @@ class FCN():
         loss_ic = self.loss_ic(input_ic)
 
         # loss_val = 1e2*loss_p + 1e-3*loss_f
-        loss_val = self.lambda_data*loss_p + self.lambda_pde*loss_f + self.lambda_bc*loss_bc + 0.*loss_ic
+        loss_val = self.lambda_data * loss_p + self.lambda_pde * loss_f + self.lambda_bc * loss_bc \
+                   + self.lambda_ic * loss_ic
 
         return loss_val, loss_p, loss_f, loss_bc, loss_ic
 
@@ -485,13 +537,14 @@ class FCN():
             p_pred = self.scaler.backward_rir(p_pred)
         # Relative L2 Norm of the error
         # relative_error = torch.linalg.norm((p_true - p_pred.squeeze(0)), 2) / torch.linalg.norm(p_true,2)
-        relative_error = (torch.abs(p_true - p_pred.squeeze(0))**2).mean()
+        sq_err = torch.abs(p_true - p_pred.squeeze(0)) ** 2
+        mse = sq_err.mean()
         # Error vector
         error_vec = torch.abs(p_true - p_pred.squeeze(0) / (p_true + np.finfo(np.float32).eps))
         p_pred = p_pred.cpu().detach().numpy()
         error_vec = error_vec.cpu().detach().numpy()
 
-        return error_vec, relative_error.item(), p_pred
+        return error_vec, mse.item(), sq_err.cpu().detach().numpy(), p_pred
 
     def inference(self, input):
         g = input.clone()
@@ -503,13 +556,13 @@ class FCN():
 
     def scale_xy(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
-        x = x/self.c
-        y = y/self.c
+        x = x / self.c
+        y = y / self.c
         return torch.stack((x, y, t), dim=-1).view(3, -1).unsqueeze(0)
 
     def scale_t(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
-        t = t*self.c
+        t = t * self.c
         return torch.vstack((x, y, t)).unsqueeze(0)
 
 
@@ -523,11 +576,14 @@ class PINNDataset(Dataset):
                  y_m,
                  t,
                  t_ind,
-                 n_pde_samples = 800,
-                 counter = 1):
-        self.tfnp = lambda x : torch.from_numpy(x).float()
+                 n_pde_samples=800,
+                 counter=1,
+                 maxcounter = 1e5,
+                 curriculum_training = False):
+        self.tfnp = lambda x: torch.from_numpy(x).float()
+        self.curriculum_training = curriculum_training
         self.counter = counter
-        self.maxcounter = int(4e5)
+        self.maxcounter = maxcounter
         # self.maxcounter = -1
         self.TrainData = measured_data
         self.n_pde_samples = n_pde_samples
@@ -542,14 +598,14 @@ class PINNDataset(Dataset):
         self.tt = np.repeat(self.t, len(self.x_ref))
         self.xx = np.tile(self.x_ref, len(self.t))
         self.yy = np.tile(self.y_ref, len(self.t))
-        self.collocation_all = self.tfnp(np.stack([self.xx, self.yy, self.tt], axis = 0))
+        self.collocation_all = self.tfnp(np.stack([self.xx, self.yy, self.tt], axis=0))
         self.pressure_all = self.tfnp(refdata[:, self.t_ind].flatten())
         self.xmax = self.x_ref.max()
         self.xmin = self.x_ref.min()
         self.ymax = self.y_ref.max()
         self.ymin = self.y_ref.min()
         self.tmax = self.t[self.t_ind].max()
-        self.counter_fun = lambda x, n : int(n * x)
+        self.counter_fun = lambda x, n: int(n * x)
         # self.batch_size = batch_size
         # self.n_time_instances = int(0.6 * self.batch_size)
         # self.n_spatial_instances = self.batch_size - self.n_time_instances
@@ -561,21 +617,29 @@ class PINNDataset(Dataset):
         # return len(self.t_ind)
 
     def __getitem__(self, idx):
-        if self.counter < self.maxcounter:
-            window_size = 100
-            overlap = 50
-            t_ind_windowed = window(self.t_ind,w = window_size, o = overlap) # 100 taps, 50 overlap
+        if np.logical_and(self.curriculum_training, self.counter < self.maxcounter):
+            sample_limit = self.counter_fun(self.counter / self.maxcounter, len(self.t_ind))
+            sample_limit = np.maximum(600, sample_limit)
+            idx = np.random.randint(0, sample_limit)
+            t_batch_indx = self.t_ind[idx]
+            t_ind_temp = self.t_ind[:sample_limit]
+            t_lims = (self.t[t_ind_temp].min(), self.t[t_ind_temp].max())
+        elif np.logical_and(not self.curriculum_training,self.counter < self.maxcounter):
+            window_size = 600
+            overlap = 600 // 4
+            t_ind_windowed = window(self.t_ind, w=window_size, o=overlap)  # 100 taps, 25 overlap
             n_windows = t_ind_windowed.shape[0]
-
             window_number = self.counter_fun(self.counter / self.maxcounter, n_windows)
             # t_ind_temp = self.t_ind[:(progressive_t_counter + 1)]
             t_ind_temp = t_ind_windowed[window_number]
             # idx = np.random.randint(0, progressive_t_counter + 1)
             idx = np.random.randint(0, window_size)
             t_batch_indx = t_ind_temp[idx]
+            t_lims = (self.t[t_ind_temp].min(), self.t[t_ind_temp].max())
         else:
             idx = np.random.randint(0, len(self.t_ind))
             t_batch_indx = self.t_ind[idx]
+            t_lims = (self.t[self.t_ind].min(), self.t[self.t_ind].max())
         t_data = self.t[t_batch_indx]
         pressure_batch = self.TrainData[:, t_batch_indx].flatten()
         pressure_bc_batch = self.TrainData[:, t_batch_indx].flatten()
@@ -583,50 +647,42 @@ class PINNDataset(Dataset):
 
         grid_pde = (2 * (lhs(2, self.n_pde_samples)) / 1 - 1)
         grid_ic = (2 * (lhs(2, self.n_pde_samples)) / 1 - 1)
-        x_pde = self.xmax*grid_pde[:,0]
-        y_pde = self.ymax*grid_pde[:,1]
-        x_bc = self.xmax*grid_pde[:,0]
-        y_bc = self.ymax*grid_pde[:,1]
-        x_ic = self.xmax*grid_ic[:,0]
-        y_ic = self.ymax*grid_ic[:,1]
+        x_pde = self.xmax * grid_pde[:, 0]
+        y_pde = self.ymax * grid_pde[:, 1]
+        x_bc = self.xmax * grid_pde[:, 0]
+        y_bc = self.ymax * grid_pde[:, 1]
+        x_ic = self.xmax * grid_ic[:, 0]
+        y_ic = self.ymax * grid_ic[:, 1]
         t_ic = np.zeros(self.n_pde_samples)
-        # x_pde = torch.FloatTensor(self.n_pde_samples).uniform_(self.xmin, self.xmax)
-        # y_pde = torch.FloatTensor(self.n_pde_samples).uniform_(self.ymin, self.ymax)
-        # x_bc = torch.FloatTensor(self.n_pde_samples).uniform_(self.xmin, self.xmax)
-        # y_bc = torch.FloatTensor(self.n_pde_samples).uniform_(self.ymin, self.ymax)
-        # x_ic = torch.FloatTensor(self.n_pde_samples).uniform_(self.xmin, self.xmax)
-        # y_ic = torch.FloatTensor(self.n_pde_samples).uniform_(self.ymin, self.ymax)
-        # t_ic = torch.zeros(self.n_pde_samples)
         if self.counter < self.maxcounter:
-            t_pde = t_data.max()*lhs(1, self.n_pde_samples).squeeze(-1)
-            t_bc = t_data.max()*lhs(1, self.n_pde_samples).squeeze(-1)
-            # t_pde = torch.FloatTensor(self.n_pde_samples).uniform_(0., t_data.max())
-            # t_bc = torch.FloatTensor(self.n_pde_samples).uniform_(0., t_data.max())
+            t_pde = t_data.max() * lhs(1, self.n_pde_samples).squeeze(-1)
+            t_bc = t_data.max() * lhs(1, self.n_pde_samples).squeeze(-1)
         else:
-            t_pde = self.tmax*lhs(1, self.n_pde_samples).squeeze(-1)
-            t_bc = t_data.max()*lhs(1, self.n_pde_samples).squeeze(-1)
-            # t_pde = torch.FloatTensor(self.n_pde_samples).uniform_(0., self.tmax)
-            # t_bc = torch.FloatTensor(self.n_pde_samples).uniform_(0., t_data.max())
+            t_pde = self.tmax * lhs(1, self.n_pde_samples).squeeze(-1)
+            t_bc = t_data.max() * lhs(1, self.n_pde_samples).squeeze(-1)
         tt_data = np.repeat(t_data, len(x_data))
-        collocation_train = np.stack([x_data, y_data, tt_data], axis = 0)
-        collocation_pde = np.stack([x_pde, y_pde, t_pde], axis = 0)
-        collocation_bc = np.stack([x_bc, y_bc, t_bc], axis = 0)
-        collocation_ic = np.stack([x_ic, y_ic, t_ic], axis = 0)
+        collocation_train = np.stack([x_data, y_data, tt_data], axis=0)
+        collocation_pde = np.stack([x_pde, y_pde, t_pde], axis=0)
+        collocation_bc = np.stack([x_bc, y_bc, t_bc], axis=0)
+        collocation_ic = np.stack([x_ic, y_ic, t_ic], axis=0)
         self.counter += 1
 
-        return {'collocation_train' : self.tfnp(collocation_train),
-                'collocation_bc' : self.tfnp(collocation_bc),
-                'collocation_pde' : self.tfnp(collocation_pde),
-                'collocation_ic' : self.tfnp(collocation_ic),
-                'pressure_bc_batch' : self.tfnp(pressure_bc_batch),
-                'pressure_batch' : self.tfnp(pressure_batch),
-                't_batch_indx' : t_batch_indx,
-                'max_t': t_data.max()}
+        return {
+            'collocation_train': self.tfnp(collocation_train),
+            'collocation_bc': self.tfnp(collocation_bc),
+            'collocation_pde': self.tfnp(collocation_pde),
+            'collocation_ic': self.tfnp(collocation_ic),
+            'pressure_bc_batch': self.tfnp(pressure_bc_batch),
+            'pressure_batch': self.tfnp(pressure_batch),
+            't_batch_indx': t_batch_indx,
+            'max_t': t_data.max(),
+            't_lims': t_lims}
 
-def window(a, w = 4, o = 2, copy = False):
+
+def window(a, w=4, o=2, copy=False):
     sh = (a.size - w + 1, w)
     st = a.strides * 2
-    view = np.lib.stride_tricks.as_strided(a, strides = st, shape = sh)[0::o]
+    view = np.lib.stride_tricks.as_strided(a, strides=st, shape=sh)[0::o]
     if copy:
         return view.copy()
     else:
