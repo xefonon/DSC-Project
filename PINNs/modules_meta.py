@@ -138,7 +138,7 @@ class SingleBVPNet(MetaModule):
         # coords = coords_org
 
         y = self.net(model_input, self.get_subdict(params, 'net'))
-        output = torch.zeros_like(y)
+        # output = torch.zeros_like(y)
 
         if self.polar:
             real = (y[...,0]*torch.cos(2*np.pi*y[...,1]))[...,None]

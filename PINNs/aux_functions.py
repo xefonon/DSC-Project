@@ -21,7 +21,7 @@ from modules_meta import SingleBVPNet
 import h5py
 from pathlib import Path
 from sklearn.neighbors import NearestNeighbors
-
+import librosa
 
 def subsample_gridpoints(grid, subsample=5):
     r0 = grid.mean(axis=-1)
@@ -120,15 +120,34 @@ class normalize_rirs:
     def __init__(self, data, device='cuda'):
         self.data = data
         self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
-        self.maxabs = lambda x: np.max(abs(x))
+        self.lb = data.min()
+        self.ub = data.max()
+        self.scaling = lambda x: 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
+        self.unscaling = lambda x: (x + 1) * (self.ub - self.lb) / 2. + self.lb
 
-        self.norm = self.tfnp(self.maxabs(data)[None, None]/.95)
+        # self.norm = self.tfnp(self.maxabs(data)[None, None]/.95)
 
     def forward_rir(self, input):
-        return input / self.norm
+        return self.scaling(input)
 
     def backward_rir(self, input):
-        return input * self.norm
+        return self.unscaling(input)
+
+
+class maxabs_normalize_rirs:
+    def __init__(self, data, device='cuda', l_inf_norm = 0.1):
+        self.data = data
+        self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
+        self.maxabs = lambda x: np.max(abs(x))
+        self.l_inf_norm = l_inf_norm
+
+        self.norm = self.tfnp(self.maxabs(data)[None, None])
+
+    def forward_rir(self, input):
+        return self.l_inf_norm*input / (self.norm)
+
+    def backward_rir(self, input):
+        return (1/self.l_inf_norm)*input * self.norm
 
 
 def get_measurement_vectors(filename, real_data=True, subsample_points=10):
@@ -138,8 +157,10 @@ def get_measurement_vectors(filename, real_data=True, subsample_points=10):
         temperature = data_dict['temperature']
         c = speed_of_sound(temperature)
         fs = data_dict['fs']
+        refdata = librosa.resample(refdata, fs, 8000)
+        fs = 8000
         grid = data_dict['grid_bottom']
-        measureddata = data_dict['RIRs_bottom']
+        measureddata = refdata
         # grid_measured = data_dict['grid_bottom']
         grid -= grid.mean(axis=-1)[:, None]
         grid_measured, indcs = subsample_gridpoints(grid, subsample=subsample_points)
@@ -156,7 +177,7 @@ def get_measurement_vectors(filename, real_data=True, subsample_points=10):
         fs = data['fs']
         grid = data['grid_reference']
         measureddata = data['array_data']
-        grid_measured = data['grids_measured']
+        grid_measured = data['grid_measured']
         c = 343.
     return refdata, fs, grid, measureddata, grid_measured, c
 
@@ -219,7 +240,7 @@ def plot_results(collocation_data, rirdata, PINN):
 
     for n in range(Nplots):
         error_vec, mean_square_error, square_error, p_pred = PINN.test(tfnp(collocation_data[n]), tfnp(rirdata[:, n]))
-        Pred_pressure.append(p_pred.squeeze(0))
+        Pred_pressure.append(p_pred)
         error_vecs.append(error_vec)
         mean_square_errors.append(mean_square_error)
         square_errors.append(square_error)
@@ -273,7 +294,7 @@ def plot_results(collocation_data, rirdata, PINN):
 
 #  Deep Neural Network
 class DNN(nn.Module):
-    def __init__(self, layers, lb, ub, siren=True):
+    def __init__(self, n_hidden_layers, lb, ub, siren=True, scale_input = True):
         super().__init__()  # call __init__ from parent class
         self.siren = siren
         'activation function'
@@ -284,22 +305,29 @@ class DNN(nn.Module):
 
         self.lb = lb
         self.ub = ub
-        self.layers = layers
+        self.n_hidden_layers = n_hidden_layers
         self.scaling = lambda x: 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
-
+        self.scale_input = scale_input
+        # self.ansatz = ansatz
+        # if self.ansatz:
+        #     out_features = 1024
+        # else:
+        out_features = 1
         'Initialize neural network as a list using nn.Modulelist'
         if self.siren:
             # self.net = SirenNet(
             #                 dim_in = layers[0],               # input dimension, ex. 2d coor
             #                 dim_hidden = 256,                 # hidden dimension
-            #                 dim_out = 1,                      # output dimension, ex. rgb value
+            #                 dim_out = out_features,                      # output dimension, ex. rgb value
             #                 num_layers = 5,                   # number of layers
             #                 final_activation = nn.Identity(), # activation of final layer (nn.Identity() for direct output)
             #                 w0_initial = 30.,                 # different signals may require different omega_0 in the first layer - this is a hyperparameter
             #                 w0 = 1.
             #             )
-            self.net = SingleBVPNet(out_features=1, in_features=3, hidden_features=512, num_hidden_layers=3)
+            self.net = SingleBVPNet(out_features=out_features, in_features=3, hidden_features= 512,
+                                    num_hidden_layers=n_hidden_layers)
         else:
+            layers = np.array([3] + n_hidden_layers*[100] + [1])
             self.linears = nn.ModuleList([nn.Linear(layers[i], layers[i + 1]) for i in range(len(layers) - 1)])
             'Xavier Normal Initialization'
             for i in range(len(layers) - 1):
@@ -311,7 +339,7 @@ class DNN(nn.Module):
     'foward pass'
 
     def forward(self, input):
-        batch_size = input.shape[0]
+        # batch_size = input.shape[1]
         g = input.clone()
         x, y, t = g[:, 0, :].flatten(), g[:, 1, :].flatten(), g[:, 2, :].flatten()
 
@@ -329,7 +357,10 @@ class DNN(nn.Module):
 
         # preprocessing input - feature scaling function
         input_preprocessed = torch.stack((x, y, t), dim=-1).view(-1, 3)
-        z = self.scaling(input_preprocessed)
+        if self.scale_input:
+            z = self.scaling(input_preprocessed)
+        else:
+            z = input_preprocessed
         if self.siren:
             p_out = self.net(z)  # z: [batchsize x 3]
         else:
@@ -339,15 +370,51 @@ class DNN(nn.Module):
 
             p_out = self.linears[-1](z)
 
-        return p_out.reshape(batch_size, -1)
+        return p_out
 
+def distance_between(s, r):
+    """Distance of all combinations of locations in s and r
+    Args:
+        s (ndarray [N, 2]): cartesian coordinates of s
+        r (ndarray [M, 2]): cartesian coordinates of r
+    Returns:
+        ndarray [M, N]: distances in meters
+    """
+    s = torch.atleast_2d(s)
+    r = torch.atleast_2d(r)
+    if s.shape[-1]!=2:
+        s = s.T
+    if r.shape[-1]!=2:
+        r = r.T
+    return torch.linalg.norm(s[None, :] - r[:, None], axis=-1)
+
+def plane_wave(t, c, fs, source_coords, receiver_coords):
+    """
+
+    Parameters
+    ----------
+    t - instanteneous time (scalar)
+    c
+    fs
+    source_coords
+    receiver_coords
+
+    Returns
+    -------
+
+    """
+    with torch.no_grad():
+        receiver_coords = receiver_coords / torch.linalg.norm(receiver_coords, axis = 0)
+    d = distance_between(source_coords, receiver_coords)
+    Dt = t[:, None] - (d / c)
+    return torch.sinc(fs * Dt)
 
 #  PINN
 # https://github.com/alexpapados/Physics-Informed-Deep-Learning-Solid-and-Fluid-Mechanics
 class FCN():
     def __init__(self,
-                 layers,
                  bounds,
+                 n_hidden_layers = 4,
                  device=None,
                  siren=True,
                  lambda_data=1.,
@@ -356,25 +423,32 @@ class FCN():
                  lambda_ic=1e-2,
                  loss_fn='mae',
                  c=343.,
-                 scaler=None):
+                 output_scaler=None,
+                 fs = 48e3,
+                 map_input = True):
         if device is None:
             self.device = 'cpu'
         else:
             self.device = device
         if loss_fn in ['mse', 'MSE']:
             self.loss_function = nn.MSELoss(reduction='mean')
+            # self.loss_function = lambda y_hat, y : ((torch.abs(y - y_hat)**2)/torch.abs(y)**2).mean()
+            self.loss_function_pde =  nn.MSELoss(reduction='mean')
         else:
             self.loss_function = nn.L1Loss(reduction='mean')
+            self.loss_function_pde =  nn.L1Loss(reduction='mean')
+            # self.loss_function = nn.L1Loss(reduction='sum')
         'Initialize iterator'
         self.iter = 0
+        self.fs = fs
         self.lambda_data = lambda_data
         self.lambda_pde = lambda_pde
         self.lambda_bc = lambda_bc
         self.lambda_ic = lambda_ic
         self.siren = siren
-        self.scaler = scaler
         'speed of sound'
         self.c = c
+        self.output_scaler = output_scaler if output_scaler is not None else nn.Identity()
 
         (self.xmin, self.xmax) = bounds['x']
         (self.ymin, self.ymax) = bounds['y']
@@ -382,11 +456,18 @@ class FCN():
 
         self.tmax *= self.c
         self.tmin *= self.c
-
         self.lb = torch.Tensor([self.xmin, self.ymin, self.tmin]).to(self.device)
         self.ub = torch.Tensor([self.xmax, self.ymax, self.tmax]).to(self.device)
         'Call our DNN'
-        self.dnn = DNN(layers, lb=self.lb, ub=self.ub, siren=siren).to(device)
+        self.dnn = DNN(n_hidden_layers, lb=self.lb, ub=self.ub, siren=siren,
+                       scale_input = map_input).to(device)
+        'test with cosine similarity loss'
+        self.cosine_sim = nn.CosineEmbeddingLoss()
+        # self.ansatz_formulation = ansatz_formulation
+        # if self.ansatz_formulation:
+        #     # self.r_source = torch.nn.Parameter(torch.randn(1000, 2, requires_grad=True).float().to(self.device))
+        #     self.r_source = torch.rand(1024, 2, requires_grad=True, device=self.device, dtype= torch.float32)
+
 
     def cylindrical_coords(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
@@ -394,14 +475,26 @@ class FCN():
         phi = torch.atan2(y, x)
         return r, phi
 
-    def loss_data(self, input, pm, use_log_scale=False):
+    def loss_data(self, input, pm, data_loss_weights = None):
         g = input.clone()
         g = self.scale_t(g)
         g.requires_grad = True
-        loss_u = self.loss_function(self.dnn(g), pm)
-        # if use_log_scale:
+        # if self.ansatz_formulation:
+        #     pressure = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        pressure = self.dnn(g).T
 
-        return loss_u
+        loss_u = self.loss_function(data_loss_weights*pressure, data_loss_weights*pm)
+        # loss_u += self.cosine_sim(data_loss_weights*pressure, data_loss_weights*pm, torch.ones(pm.shape[0]).to(self.device))
+        norm_ratio = pm.norm()/pressure.norm()
+        std_ratio = pm.std()/pressure.std()
+        maxabs_ratio = abs(pm).max()/abs(pressure).max()
+
+        return loss_u, norm_ratio, std_ratio, maxabs_ratio
 
     def loss_PDE(self, input):
 
@@ -409,12 +502,19 @@ class FCN():
         g = self.scale_t(g)
         g.requires_grad = True
 
-        pnet = self.dnn(g)
+        # if self.ansatz_formulation:
+        #     pressure = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        pnet = self.dnn(g).T
 
-        p_r_t = \
-            autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
-                          retain_graph=True,
-                          create_graph=True)[0]
+        # pnet = self.output_scaler.backward_rir(pressure)
+
+        p_r_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
+                                create_graph=True)[0]
         p_rr_tt = \
             autograd.grad(p_r_t.view(-1, 1), g, torch.ones(input.view(-1, 1).shape).to(self.device),
                           create_graph=True)[0]
@@ -426,7 +526,7 @@ class FCN():
         # f = p_tt - self.c * (p_xx + p_yy)
         f = p_xx + p_yy - 1. * p_tt
 
-        loss_f = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
+        loss_f = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
 
         return loss_f
 
@@ -437,7 +537,18 @@ class FCN():
         r, phi = self.cylindrical_coords(input)
         sin_phi = torch.sin(phi)
         cos_phi = torch.cos(phi)
-        pnet = self.dnn(g)
+
+        # if self.ansatz_formulation:
+        #     pressure = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        pnet = self.dnn(g).T
+
+        # pnet = self.output_scaler.backward_rir(pressure)
+
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
                                 create_graph=True)[0]
         p_x = p_x_y_t[:, [0]].flatten()
@@ -448,7 +559,7 @@ class FCN():
         # f = r * (dp_dr + 1 / self.c * dp_dt)
         # f = r * (dp_dr + dp_dt)
         f = dp_dr + dp_dt
-        bcs_loss = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
+        bcs_loss = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
         return bcs_loss
 
     def loss_ic(self, input):
@@ -456,27 +567,36 @@ class FCN():
         g = input.clone()
         g.requires_grad = True
 
-        pnet = self.dnn(g)
+        # if self.ansatz_formulation:
+        #     pressure = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        pnet = self.dnn(g).T
+
+        # pnet = self.output_scaler.backward_rir(pressure)
+
         p_x_y_t = autograd.grad(pnet.view(-1, 1), g, torch.ones([input.view(-1, 3).shape[0], 1]).to(self.device),
                                 create_graph=True)[0]
         dp_dt = p_x_y_t[:, [2]].flatten()
         f = pnet + dp_dt
-        ics_loss = self.loss_function(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
+        ics_loss = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
         return ics_loss
 
-    def loss(self, input_data, input_pde, input_ic, pm):
-        if self.scaler is not None:
-            pm = self.scaler.forward_rir(pm)
-        loss_p = self.loss_data(input_data, pm)
+    def loss(self, input_data, input_pde, input_ic, pm, data_loss_weights):
+        if self.output_scaler is not None:
+            pm = self.output_scaler.forward_rir(pm)
+        loss_p, norm_ratio, std_ratio, maxabs_ratio = self.loss_data(input_data, pm, data_loss_weights)
         loss_f = self.loss_PDE(input_pde)
         loss_bc = self.loss_bc(input_pde)
         loss_ic = self.loss_ic(input_ic)
 
-        # loss_val = 1e2*loss_p + 1e-3*loss_f
         loss_val = self.lambda_data * loss_p + self.lambda_pde * loss_f + self.lambda_bc * loss_bc \
                    + self.lambda_ic * loss_ic
 
-        return loss_val, loss_p, loss_f, loss_bc, loss_ic
+        return loss_val, loss_p, loss_f, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio
 
     'callable for optimizer'
 
@@ -502,9 +622,10 @@ class FCN():
 
         return loss
 
-    def SGD_step(self, data_input, pde_input, ic_input, p_data):
+    def SGD_step(self, data_input, pde_input, ic_input, p_data, data_loss_weights = None):
 
-        loss, loss_data, loss_pde, loss_bc, loss_ic = self.loss(data_input, pde_input, ic_input, p_data)
+        loss, loss_data, loss_pde, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio \
+            = self.loss(data_input, pde_input, ic_input, p_data, data_loss_weights)
 
         loss.backward()
 
@@ -524,7 +645,11 @@ class FCN():
                 loss_data.cpu().detach().numpy(),
                 loss_pde.cpu().detach().numpy(),
                 loss_bc.cpu().detach().numpy(),
-                loss_ic.cpu().detach().numpy())
+                loss_ic.cpu().detach().numpy(),
+                norm_ratio.cpu().detach().numpy(),
+                std_ratio.cpu().detach().numpy(),
+                maxabs_ratio.cpu().detach().numpy()
+                )
 
     'test neural network'
 
@@ -532,16 +657,23 @@ class FCN():
         g = test_input.clone().unsqueeze(0)
         g = self.scale_t(g)
 
-        p_pred = self.dnn(g)
-        if self.scaler is not None:
-            p_pred = self.scaler.backward_rir(p_pred)
+        # if self.ansatz_formulation:
+        #     p_pred = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        p_pred = self.dnn(g).T
+        if self.output_scaler is not None:
+            p_pred = self.output_scaler.backward_rir(p_pred)
         # Relative L2 Norm of the error
         # relative_error = torch.linalg.norm((p_true - p_pred.squeeze(0)), 2) / torch.linalg.norm(p_true,2)
         sq_err = torch.abs(p_true - p_pred.squeeze(0)) ** 2
         mse = sq_err.mean()
         # Error vector
-        error_vec = torch.abs(p_true - p_pred.squeeze(0) / (p_true + np.finfo(np.float32).eps))
-        p_pred = p_pred.cpu().detach().numpy()
+        error_vec = torch.abs((p_true - p_pred.squeeze(0))**2 / (p_true + np.finfo(np.float32).eps)**2)
+        p_pred = p_pred.squeeze(0).cpu().detach().numpy()
         error_vec = error_vec.cpu().detach().numpy()
 
         return error_vec, mse.item(), sq_err.cpu().detach().numpy(), p_pred
@@ -549,9 +681,16 @@ class FCN():
     def inference(self, input):
         g = input.clone()
         g = self.scale_t(g)
-        p_pred = self.dnn(g)
-        if self.scaler is not None:
-            p_pred = self.scaler.backward_rir(p_pred)
+        # if self.ansatz_formulation:
+        #     p_pred = (self.dnn(g)*plane_wave(g[0,2],
+        #                                        1.,
+        #                                        self.fs/self.c,
+        #                                        self.r_source,
+        #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
+        # else:
+        p_pred = self.dnn(g).T
+        # if self.output_scaler is not None:
+        #     p_pred = self.output_scaler.backward_rir(p_pred)
         return p_pred
 
     def scale_xy(self, input):
@@ -578,8 +717,9 @@ class PINNDataset(Dataset):
                  t_ind,
                  n_pde_samples=800,
                  counter=1,
-                 maxcounter = 1e5,
-                 curriculum_training = False):
+                 maxcounter=1e5,
+                 curriculum_training=False,
+                 batch_size = 300):
         self.tfnp = lambda x: torch.from_numpy(x).float()
         self.curriculum_training = curriculum_training
         self.counter = counter
@@ -589,6 +729,7 @@ class PINNDataset(Dataset):
         self.n_pde_samples = n_pde_samples
         # self.BCData = refdata[x_y_boundary_ind]
         self.t_ind = t_ind
+        self.batch_size = batch_size
         # self.x_y_boundary_ind = x_y_boundary_ind
         self.x_m = x_m
         self.y_m = y_m
@@ -606,6 +747,9 @@ class PINNDataset(Dataset):
         self.ymin = self.y_ref.min()
         self.tmax = self.t[self.t_ind].max()
         self.counter_fun = lambda x, n: int(n * x)
+        decay_rate = np.linspace(0, 1, len(self.t))
+        self.t_weight = 10*(1-.98)**decay_rate
+
         # self.batch_size = batch_size
         # self.n_time_instances = int(0.6 * self.batch_size)
         # self.n_spatial_instances = self.batch_size - self.n_time_instances
@@ -619,30 +763,30 @@ class PINNDataset(Dataset):
     def __getitem__(self, idx):
         if np.logical_and(self.curriculum_training, self.counter < self.maxcounter):
             sample_limit = self.counter_fun(self.counter / self.maxcounter, len(self.t_ind))
-            sample_limit = np.maximum(600, sample_limit)
-            idx = np.random.randint(0, sample_limit)
+            sample_limit = np.maximum(self.batch_size, sample_limit)
+            idx = np.random.randint(0, sample_limit, self.batch_size)
             t_batch_indx = self.t_ind[idx]
             t_ind_temp = self.t_ind[:sample_limit]
             t_lims = (self.t[t_ind_temp].min(), self.t[t_ind_temp].max())
-        elif np.logical_and(not self.curriculum_training,self.counter < self.maxcounter):
-            window_size = 600
-            overlap = 600 // 4
+        elif np.logical_and(not self.curriculum_training, self.counter < self.maxcounter):
+            window_size = self.batch_size
+            overlap = self.batch_size // 2
             t_ind_windowed = window(self.t_ind, w=window_size, o=overlap)  # 100 taps, 25 overlap
             n_windows = t_ind_windowed.shape[0]
             window_number = self.counter_fun(self.counter / self.maxcounter, n_windows)
             # t_ind_temp = self.t_ind[:(progressive_t_counter + 1)]
             t_ind_temp = t_ind_windowed[window_number]
             # idx = np.random.randint(0, progressive_t_counter + 1)
-            idx = np.random.randint(0, window_size)
+            idx = np.random.randint(0, window_size, window_size)
             t_batch_indx = t_ind_temp[idx]
             t_lims = (self.t[t_ind_temp].min(), self.t[t_ind_temp].max())
         else:
-            idx = np.random.randint(0, len(self.t_ind))
+            idx = np.random.randint(0, len(self.t_ind), self.batch_size)
             t_batch_indx = self.t_ind[idx]
             t_lims = (self.t[self.t_ind].min(), self.t[self.t_ind].max())
         t_data = self.t[t_batch_indx]
-        pressure_batch = self.TrainData[:, t_batch_indx].flatten()
-        pressure_bc_batch = self.TrainData[:, t_batch_indx].flatten()
+        pressure_batch = self.TrainData[:, t_batch_indx].flatten(order = 'F')
+        pressure_bc_batch = self.TrainData[:, t_batch_indx].flatten(order = 'F')
         x_data, y_data = self.x_m, self.y_m
 
         grid_pde = (2 * (lhs(2, self.n_pde_samples)) / 1 - 1)
@@ -660,8 +804,13 @@ class PINNDataset(Dataset):
         else:
             t_pde = self.tmax * lhs(1, self.n_pde_samples).squeeze(-1)
             t_bc = t_data.max() * lhs(1, self.n_pde_samples).squeeze(-1)
+
+        data_loss_weights = self.t_weight[t_batch_indx]
+        data_loss_weights = np.repeat(data_loss_weights, len(x_data))
         tt_data = np.repeat(t_data, len(x_data))
-        collocation_train = np.stack([x_data, y_data, tt_data], axis=0)
+        xx_data = np.tile(x_data, len(t_data))
+        yy_data = np.tile(y_data, len(t_data))
+        collocation_train = np.stack([xx_data, yy_data, tt_data], axis=0)
         collocation_pde = np.stack([x_pde, y_pde, t_pde], axis=0)
         collocation_bc = np.stack([x_bc, y_bc, t_bc], axis=0)
         collocation_ic = np.stack([x_ic, y_ic, t_ic], axis=0)
@@ -676,7 +825,8 @@ class PINNDataset(Dataset):
             'pressure_batch': self.tfnp(pressure_batch),
             't_batch_indx': t_batch_indx,
             'max_t': t_data.max(),
-            't_lims': t_lims}
+            'data_loss_weights': self.tfnp(data_loss_weights),
+            't_lims': t_lims,}
 
 
 def window(a, w=4, o=2, copy=False):
