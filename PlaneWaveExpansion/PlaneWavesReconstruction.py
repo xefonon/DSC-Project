@@ -6,6 +6,8 @@ import time
 from utils_soundfields import plot_sf
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import Normalizer
+from celer import LassoCV
+import click
 #%%
 def reference_grid(steps, xmin=-.7, xmax=.7, z = 0.):
     x = np.linspace(xmin, xmax, steps)
@@ -218,10 +220,10 @@ def Ridge_regression(H, p, n_plwav=None, cv=True):
     """
     if cv:
         reg = linear_model.RidgeCV(cv=5, alphas=np.geomspace(1e-2, 1e-7, 50),
-                                   fit_intercept=True, normalize=True)
+                                   fit_intercept=True)
     else:
         alpha_titk = 2.8e-5
-        reg = linear_model.Ridge(alpha=alpha_titk, fit_intercept=True, normalize=True)
+        reg = linear_model.Ridge(alpha=alpha_titk, fit_intercept=True)
 
     if n_plwav is None:
         n_plwav = H.shape[-1]
@@ -277,8 +279,77 @@ def LASSO_regression(H, p, n_plwav=None, cv=True):
         pass
     return q_las, alpha_lass
 
+def LASSO_regression_celer(H, p, n_plwav=None):
+    """
+    Compressive Sensing - Soundfield Reconstruction
+
+    Parameters
+    ----------
+    H : Transfer Matrix.
+    p : Measured Pressure.
+    n_plwav : number of plane waves.
+
+    Returns
+    -------
+    q_las : Plane wave coefficients.
+    alpha_lass : Regularizor.
+
+    """
+    if n_plwav is None:
+        n_plwav = H.shape[-1]
+    if H.dtype == complex:
+        H = stack_real_imag_H(H)
+    if p.dtype == complex:
+        p = np.concatenate((p.real, p.imag))
+
+    reg_las = LassoCV( cv=5, alphas=np.geomspace(1e-2, 1e-8, 20),
+                                       fit_intercept=True, tol = 1e-4, n_jobs= 6)
+
+    reg_las.fit(H, p)
+    q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
+    try:
+        alpha_lass = reg_las.alpha_
+    except:
+        pass
+    return q_las, alpha_lass
+
 # %%
-filename = '../Data/SoundFieldControlPlanarDataset.h5'
+# @click.command()
+# @click.option(
+#     "--data_dir", default='../Data', type=str, help="Directory of training data"
+# )
+# @click.option(
+#     "--save_dir",
+#     default="./Reconstructions",
+#     type=str,
+#     help="Directory for saving PW model results"
+# )
+# @click.option(
+#     "--train_epochs",
+#     default=1e8,
+#     type=int,
+#     help="Number of epochs for which to train PINN (in total)"
+# )
+# @click.option(
+#     "--siren",
+#     default=True,
+#     type=bool,
+#     help="Use sinusoidal activations"
+# )
+# @click.option(
+#     "--real_data",
+#     default=True,
+#     type=bool,
+#     help="Use measurement data"
+# )
+# @click.option(
+#     "--standardize_data",
+#     default=False,
+#     type=bool,
+#     help="Standardize measurement data with global mean and std"
+# )
+
+filename = './Data/SoundFieldControlPlanarDataset.h5'
 pref, fs, grid, pm, grid_measured, f_vec = get_measurement_vectors(filename= filename)
 
 
@@ -309,6 +380,9 @@ Href, _ = get_sensing_mat(f, 3000,
 startridge = time.time()
 coeffs_ridge, alpha_ridge = Ridge_regression(H, pm[:, f_ind])
 endridge = time.time()
+startlass = time.time()
+coeffs_lasso, alpha_lasso = LASSO_regression_celer(H, pm[:, f_ind])
+endlass = time.time()
 # startlass = time.time()
 # coeffs_lasso, alpha_lasso = LASSO_regression(H, pm_)
 # endlass = time.time()
@@ -319,17 +393,17 @@ endridge = time.time()
 rmse = lambda x, y: np.sqrt((abs(y - x) ** 2).mean())
 
 # plars = np.squeeze(Href) @ coeffs_larsLasso
-# plass = np.squeeze(Href) @ coeffs_lasso
+plass = np.squeeze(Href) @ coeffs_lasso
 pridge = np.squeeze(Href) @ coeffs_ridge
 # portho = np.squeeze(Href) @ coeffs_ortho
 # print("alpha Lars Lasso: {}, time: {:.4f}, error: {:.5f}".format(alpha_larsLasso, -(startlars - endlars),
 #                                                                  rmse(plars, pref_)))
 print("alpha Ridge: {}, time: {:.4f}, error: {:.5f}".format(alpha_ridge, -(startridge - endridge),
                                                             rmse(pridge, pref[:, f_ind])))
-# print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format(alpha_lasso, -(startlass - endlass), rmse(plass, pref_)))
+print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format(alpha_lasso, -(startlass - endlass), rmse(plass,  pref[:, f_ind])))
 # print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format('doesnt apply', -(startlass - endlass), rmse(portho, pref_)))
 fig = plt.figure()
-ax = fig.add_subplot(1, 2, 1)
+ax = fig.add_subplot(1, 3, 1)
 ax, _ = plot_sf(pref[:, f_ind], grid[0],grid[1], ax=ax)
 ax.set_title('truth')
 # ax = fig.add_subplot(1, 4, 2)
@@ -338,8 +412,11 @@ ax.set_title('truth')
 # ax = fig.add_subplot(1, 4, 3)
 # ax, _ = plot_sf(plass, grid[0],grid[1], ax=ax)
 # ax.set_title('Lasso')
-ax = fig.add_subplot(1, 2, 2)
+ax = fig.add_subplot(1, 3, 2)
 ax, _ = plot_sf(pridge, grid[0],grid[1], ax=ax)
+ax.set_title('Ridge')
+ax = fig.add_subplot(1, 3, 3)
+ax, _ = plot_sf(plass, grid[0],grid[1], ax=ax)
 ax.set_title('Ridge')
 # ax = fig.add_subplot(1, 5, 5)
 # ax, _ = plot_sf(portho, grid[0],grid[1], ax=ax)
