@@ -26,3 +26,7 @@ PINNs/wandb/
 PINNs/RIRBandwidthExtension/
 
 Data/
+
+SIREN_helmholtz/wandb/
+
+*.xlsx

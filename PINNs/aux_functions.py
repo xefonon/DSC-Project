@@ -489,14 +489,14 @@ class FCN():
         pressure = self.dnn(g).T
 
         loss_u = self.loss_function(data_loss_weights*pressure, data_loss_weights*pm)
-        # loss_u += self.cosine_sim(data_loss_weights*pressure, data_loss_weights*pm, torch.ones(pm.shape[0]).to(self.device))
+        # loss_u = self.loss_function(pressure, pm)
         norm_ratio = pm.norm()/pressure.norm()
         std_ratio = pm.std()/pressure.std()
         maxabs_ratio = abs(pm).max()/abs(pressure).max()
 
         return loss_u, norm_ratio, std_ratio, maxabs_ratio
 
-    def loss_PDE(self, input):
+    def loss_PDE(self, input, loss_pde):
 
         g = input.clone()
         g = self.scale_t(g)
@@ -526,7 +526,7 @@ class FCN():
         # f = p_tt - self.c * (p_xx + p_yy)
         f = p_xx + p_yy - 1. * p_tt
 
-        loss_f = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
+        loss_f = self.loss_function_pde(loss_pde*f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
 
         return loss_f
 
@@ -589,11 +589,11 @@ class FCN():
         if self.output_scaler is not None:
             pm = self.output_scaler.forward_rir(pm)
         loss_p, norm_ratio, std_ratio, maxabs_ratio = self.loss_data(input_data, pm, data_loss_weights)
-        loss_f = self.loss_PDE(input_pde)
+        loss_f = self.loss_PDE(input_pde, self.lambda_pde)
         loss_bc = self.loss_bc(input_pde)
         loss_ic = self.loss_ic(input_ic)
 
-        loss_val = self.lambda_data * loss_p + self.lambda_pde * loss_f + self.lambda_bc * loss_bc \
+        loss_val = self.lambda_data * loss_p + loss_f + self.lambda_bc * loss_bc \
                    + self.lambda_ic * loss_ic
 
         return loss_val, loss_p, loss_f, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio
@@ -719,6 +719,7 @@ class PINNDataset(Dataset):
                  counter=1,
                  maxcounter=1e5,
                  curriculum_training=False,
+                 t_weighting_factor = False,
                  batch_size = 300):
         self.tfnp = lambda x: torch.from_numpy(x).float()
         self.curriculum_training = curriculum_training
@@ -748,7 +749,10 @@ class PINNDataset(Dataset):
         self.tmax = self.t[self.t_ind].max()
         self.counter_fun = lambda x, n: int(n * x)
         decay_rate = np.linspace(0, 1, len(self.t))
-        self.t_weight = 10*(1-.98)**decay_rate
+        if t_weighting_factor:
+            self.t_weight = 10*(1-.98)**decay_rate
+        else:
+            self.t_weight = np.ones_like(decay_rate)
 
         # self.batch_size = batch_size
         # self.n_time_instances = int(0.6 * self.batch_size)
