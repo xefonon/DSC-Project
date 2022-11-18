@@ -6,7 +6,7 @@ import time
 from utils_soundfields import plot_sf
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import Normalizer
-from celer import LassoCV
+from celer import LassoCV, Lasso
 import click
 #%%
 def reference_grid(steps, xmin=-.7, xmax=.7, z = 0.):
@@ -302,16 +302,19 @@ def LASSO_regression_celer(H, p, n_plwav=None):
     if p.dtype == complex:
         p = np.concatenate((p.real, p.imag))
 
-    reg_las = LassoCV( cv=5, alphas=np.geomspace(1e-2, 1e-8, 20),
-                                       fit_intercept=True, tol = 1e-4, n_jobs= 6)
+    reg_las = LassoCV( cv=3, alphas=np.geomspace(1e-2, 1e-8, 20),
+                                       fit_intercept=True, tol = 1e-4, n_jobs= 12)
+    # reg_las = Lasso( alpha=1e-2,fit_intercept=True, tol = 1e-6,max_iter=1000)
 
     reg_las.fit(H, p)
     q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
     try:
         alpha_lass = reg_las.alpha_
     except:
+        alpha_lass = None
         pass
     return q_las, alpha_lass
+
 
 # %%
 # @click.command()
@@ -353,7 +356,7 @@ filename = './Data/SoundFieldControlPlanarDataset.h5'
 pref, fs, grid, pm, grid_measured, f_vec = get_measurement_vectors(filename= filename)
 
 
-f = 1025.
+f = 725.
 f_ind = np.argmin(f_vec <= f)
 f = f_vec[f_ind]
 # pm_cat = np.concatenate((pm.real[None, :, f_ind], pm.imag[None,:,  f_ind]))

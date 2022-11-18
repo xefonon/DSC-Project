@@ -649,10 +649,10 @@ class FCN():
             p_pred = self.output_scaler.backward_rir(p_pred)
         # Relative L2 Norm of the error
         # relative_error = torch.linalg.norm((p_true - p_pred.squeeze(0)), 2) / torch.linalg.norm(p_true,2)
-        sq_err = torch.abs(p_true - p_pred) ** 2
+        sq_err = torch.abs(p_true.to(self.device) - p_pred) ** 2
         mse = sq_err.mean()
         # Error vector
-        error_vec = torch.abs((p_true - p_pred)**2 / (p_true + np.finfo(np.float32).eps)**2)
+        error_vec = torch.abs((p_true.to(self.device) - p_pred)**2 / (p_true.to(self.device) + np.finfo(np.float32).eps)**2)
         p_pred = p_pred.squeeze(0).cpu().detach().numpy()
         error_vec = error_vec.squeeze(0).cpu().detach().numpy()
 
