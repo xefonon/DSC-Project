@@ -7,6 +7,7 @@ __pycache__/
 
 *.xml
 
+<<<<<<< Updated upstream
 PINNs/PINN_checkpoints/
 
 PINNs/wandb/
@@ -18,6 +19,7 @@ BPINN-numpyro/BPINN_checkpoints/
 BPINN-numpyro/wandb/
 
 PINNs/SIREN_torchmeta2/
+<<<<<<< HEAD
 
 Data/Datasets_SoundFieldControlRoom/
 
@@ -162,3 +164,16 @@ PINN_LBFGS/wandb/run-20220927_133328-3ookoedl/files/media/images/Sound_Fields_5_
 PINN_LBFGS/wandb/run-20220927_133328-3ookoedl/files/requirements.txt
 
 *.h5
+=======
+=======
+PINNs/wandb/
+>>>>>>> Stashed changes
+
+PINNs/RIRBandwidthExtension/
+
+Data/
+
+SIREN_helmholtz/wandb/
+
+*.xlsx
+>>>>>>> main

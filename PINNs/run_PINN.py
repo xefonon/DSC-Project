@@ -117,6 +117,13 @@ if device == 'cuda':
     type=int,
     help="Number of hidden layers")
 @click.option(
+<<<<<<< HEAD
+=======
+    "--n_mics_per_dimension", default=12,
+    type=int,
+    help="Number of microphones per dimension (e.g. nxn)")
+@click.option(
+>>>>>>> main
     "--curriculum_training", default=True,
     type=bool,
     help="Increase time vector (training and PDE data) incrementally in a linear manner")
@@ -124,10 +131,22 @@ if device == 'cuda':
     "--map_input", default=True,
     type=bool,
     help="Map all collocation points (e.g. x,y,t) to -1, 1")
+<<<<<<< HEAD
 def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
                standardize_data, n_hidden_layers, lambda_pde, lambda_ic, lambda_bc, time_batch,
                n_pde_samples, lr, scheduler_step, rir_time, loss_fn, max_t_counter,
                curriculum_training, map_input):
+=======
+@click.option(
+    "--adaptive_pde_weight", default=False,
+    type=bool,
+    help="Learnable weight for PDE term, if true, pde_weight_decay_iters is set to null")
+
+def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
+               standardize_data, n_hidden_layers, lambda_pde, lambda_ic, lambda_bc, time_batch,
+               n_pde_samples, lr, scheduler_step, rir_time, loss_fn, max_t_counter,
+               curriculum_training, map_input, n_mics_per_dimension, adaptive_pde_weight):
+>>>>>>> main
     config = {
         'rir_time': rir_time,
         'check_point_dir': checkpoint_dir,
@@ -137,7 +156,11 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
         'n_hidden_layers': n_hidden_layers,
         'batch_size': time_batch,
         'siren': siren,
+<<<<<<< HEAD
         'lambda_data': 1.,
+=======
+        'lambda_data': 10.,
+>>>>>>> main
         'lambda_pde': lambda_pde,
         'lambda_ic': lambda_ic,
         'lambda_bc': lambda_bc,
@@ -147,7 +170,15 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
         'loss_fn': loss_fn,
         'max_t_counter': max_t_counter,
         'curriculum_training': curriculum_training,
+<<<<<<< HEAD
         'map_input' : map_input
+=======
+        'n_mics_per_dimension': n_mics_per_dimension,
+        'map_input' : map_input,
+        't_weighting_factor' : True,
+        'adaptive_pde_weight': adaptive_pde_weight
+
+>>>>>>> main
     }
     wandb.init(config=config, project="PINN_sound_field")
 
@@ -159,7 +190,11 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
         filename = data_dir + '/ISM_sphere.npz'
     refdata, fs, grid, measureddata, grid_measured, c = get_measurement_vectors(filename,
                                                                                 real_data=hparams.real_data,
+<<<<<<< HEAD
                                                                                 subsample_points=25)  # per dimension
+=======
+                                                                                subsample_points=hparams.n_mics_per_dimension)  # per dimension
+>>>>>>> main
 
     # %%
     """Training Data"""
@@ -199,12 +234,27 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
                c=c, lambda_ic=hparams.lambda_ic, loss_fn=hparams.loss_fn, output_scaler=scaler,
                fs=fs, map_input = hparams.map_input)
 
+<<<<<<< HEAD
+=======
+    if hparams.adaptive_pde_weight:
+        PINN.lambda_pde = torch.nn.Parameter(torch.FloatTensor(hparams.n_pde_samples,
+                                                               1).uniform_(0., hparams.lambda_pde).to(device))
+        extra_params = [PINN.lambda_pde]
+        lambda_optimizer = torch.optim.Adam(extra_params, 1e-5, betas=(0.9, 0.999),
+                                            weight_decay= 1e-9)
+
+>>>>>>> main
     net_params = list(PINN.dnn.parameters())
     wandb.watch(PINN.dnn, PINN.loss_function, log='all')
 
     '''Optimization'''
     gamma = 0.9  # final learning rate will be gamma * initial_lr
+<<<<<<< HEAD
     optimizer = torch.optim.Adam(net_params, hparams.lr, betas=(0.9, 0.999), eps=1e-08, amsgrad=False)
+=======
+    optimizer = torch.optim.Adam(net_params, hparams.lr, betas=(0.9, 0.999), eps=1e-08, amsgrad=False,
+                                 weight_decay= 1e-4)
+>>>>>>> main
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                 step_size=hparams.scheduler_step if hparams.scheduler_step > 0 else 1,
                                                 gamma=gamma)
@@ -227,6 +277,8 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
         steps = state_dict_pinn["steps"] + 1
         last_epoch = state_dict_pinn["epoch"]
         optimizer.load_state_dict(state_dict_pinn["optim"])
+        if hparams.adaptive_pde_weight:
+            lambda_optimizer.load_state_dict(state_dict_pinn["lambda_optim"])
 
     # Dataset
     dataset = PINNDataset(refdata=refdata, measured_data=data, x_ref=x_ref, y_ref=y_ref,
@@ -234,7 +286,12 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
                           n_pde_samples=hparams.n_pde_samples, counter=steps + 1,
                           maxcounter=hparams.max_t_counter,
                           curriculum_training=hparams.curriculum_training,
+<<<<<<< HEAD
                           batch_size=hparams.batch_size)
+=======
+                          batch_size=hparams.batch_size,
+                          t_weighting_factor = hparams.t_weighting_factor)
+>>>>>>> main
     train_dataloader = DataLoader(dataset, batch_size=hparams.batch_size,
                                   shuffle=True,
                                   pin_memory=True, num_workers=0)
@@ -257,6 +314,12 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
             data_loss_weights = batch['data_loss_weights']
             # p_test = batch['pressure_all']
             optimizer.zero_grad()
+<<<<<<< HEAD
+=======
+            if hparams.adaptive_pde_weight:
+                lambda_optimizer.zero_grad()
+
+>>>>>>> main
             loss_total, loss_data, loss_pde, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio = PINN.SGD_step(
                 data_input.to(device),
                 pde_input.to(device),
@@ -265,6 +328,12 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
                 data_loss_weights.to(device)
             )
             optimizer.step()
+<<<<<<< HEAD
+=======
+            if hparams.adaptive_pde_weight:
+                lambda_optimizer.step()
+
+>>>>>>> main
             if hparams.scheduler_step > 0:
                 scheduler.step()
             if steps % 100 == 0:
@@ -294,16 +363,20 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
                     "steps": steps})
             if steps % int(1000) == 0:
                 checkpoint_path = "{}/PINN_{:08d}".format(checkpoint_dir, steps)
-                save_checkpoint(checkpoint_dir,
-                                checkpoint_path,
-                                {
+                state_dict_ = {
                                     "net": PINN.dnn.state_dict(),
                                     "optim": optimizer.state_dict(),
                                     "steps": steps,
                                     "epoch": epoch,
-                                },
+                                }
+                if hparams.adaptive_pde_weight:
+                    state_dict_["lambda_optim"] = lambda_optimizer.state_dict()
+                save_checkpoint(checkpoint_dir,
+                                checkpoint_path,
+                                state_dict_,
                                 remove_below_step=steps // 2
                                 )
+<<<<<<< HEAD
             if steps < len(lambda_pde_decay):
                 PINN.lambda_pde = hparams.lambda_pde*lambda_pde_decay[steps]
             else:
@@ -312,6 +385,19 @@ def train_PINN(data_dir, checkpoint_dir, train_epochs, siren, real_data,
             print(
                 f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}, t limits: ({t_lims[0].item():.3}, '
                 f'{t_lims[1].item():.3}) sec, lambda_pde: {PINN.lambda_pde}',
+=======
+            if not hparams.adaptive_pde_weight:
+                PINN.lambda_pde = hparams.lambda_pde * lambda_pde_decay[steps]
+
+            steps += 1
+            if hparams.adaptive_pde_weight:
+                lambda_pde_print = PINN.lambda_pde.mean().data
+            else:
+                lambda_pde_print = PINN.lambda_pde
+            print(
+                f'\repochs: {epoch + 1} total steps: {steps}, loss: {loss_total:.3}, t limits: ({t_lims[0].item():.3}, '
+                f'{t_lims[1].item():.3}) sec, lambda_pde: {lambda_pde_print}',
+>>>>>>> main
                 end='',
                 flush=True)
 
