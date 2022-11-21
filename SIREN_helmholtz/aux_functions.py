@@ -22,19 +22,12 @@ import h5py
 from pathlib import Path
 from sklearn.neighbors import NearestNeighbors
 import librosa
-<<<<<<< HEAD
 
-=======
-from scipy.signal import butter, filtfilt
->>>>>>> main
 def subsample_gridpoints(grid, subsample=5):
     r0 = grid.mean(axis=-1)
     tempgrid = grid - r0[:, None]
     xmin, xmax = round(tempgrid[0].min(), 3), round(tempgrid[0].max(), 3)
-<<<<<<< HEAD
     ymin, ymax = round(tempgrid[1].min(), 3), round(tempgrid[1].max(), 3)
-=======
->>>>>>> main
     newgrid = reference_grid(subsample, xmin, xmax)
     newgrid += r0[:2, None]
     nbrs = NearestNeighbors(n_neighbors=1, algorithm='ball_tree').fit(grid[:2].T)
@@ -83,11 +76,7 @@ class standardize_rirs:
     def __init__(self, data, device='cuda'):
         self.data = data
         self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
-<<<<<<< HEAD
         self.tfnp_cmplx = lambda x: torch.from_numpy(x).type(torch.complex64)
-=======
-        self.tfnp_cmplx = lambda x: torch.from_numpy(x).type(torch.complex64).to(device)
->>>>>>> main
         self.mean = self.tfnp_cmplx(data.mean()[None, None])
         self.std = self.tfnp(data.std()[None, None])
 
@@ -149,11 +138,7 @@ class maxabs_normalize_rirs:
     def __init__(self, data, device='cuda', l_inf_norm = 0.1):
         self.data = data
         self.tfnp = lambda x: torch.from_numpy(x).float().to(device)
-<<<<<<< HEAD
         self.tfnp_cmplx = lambda x: torch.from_numpy(x).type(torch.complex64)
-=======
-        self.tfnp_cmplx = lambda x: torch.from_numpy(x).type(torch.complex64).to(device)
->>>>>>> main
 
         self.maxabs = lambda x: np.max(abs(x))
         self.l_inf_norm = l_inf_norm
@@ -166,20 +151,8 @@ class maxabs_normalize_rirs:
     def backward_rir(self, input):
         return (1/self.l_inf_norm)*input * self.norm
 
-<<<<<<< HEAD
 
 def get_measurement_vectors(filename, real_data=True, subsample_points=10):
-=======
-def low_pass(signal, fc = 24000, fs = 48000, order = 5):
-    # Create an order 3 lowpass butterworth filter.
-    w = fc / (fs / 2)  # Normalize the frequency
-    b, a = butter(order, w, 'low')
-    output = filtfilt(b, a, signal)
-    return output
-
-
-def get_measurement_vectors(filename, real_data=True, subsample_points=10, filter_at_nyquist = True):
->>>>>>> main
     if real_data:
         data_dict = load_measuremenf_data(filename)
         refdata = data_dict['RIRs_bottom']
@@ -189,32 +162,12 @@ def get_measurement_vectors(filename, real_data=True, subsample_points=10, filte
         refdata = librosa.resample(refdata, fs, 8000)
         fs = 8000
         grid = data_dict['grid_bottom']
-<<<<<<< HEAD
-=======
-        source_pos = data_dict['loudspeaker_position']
->>>>>>> main
         measureddata = refdata
         # grid_measured = data_dict['grid_bottom']
         grid -= grid.mean(axis=-1)[:, None]
         grid_measured, indcs = subsample_gridpoints(grid, subsample=subsample_points)
         measureddata = measureddata[indcs]
-<<<<<<< HEAD
 
-=======
-        x = grid_measured[0]
-        y = grid_measured[1]
-        x.sort()
-        y.sort()
-        dx = np.diff(x)
-        dx = dx[dx > 1e-4].mean()
-        dy = np.diff(y)
-        dy = dy[dy > 1e-4].mean()
-        fnyq = [c/(2*dx), c/(2*dy)]
-        if filter_at_nyquist:
-            fnyq_avg = np.mean(fnyq)
-            measureddata = low_pass(measureddata, fc = fnyq_avg, fs = fs)
-            refdata = low_pass(refdata, fc = fnyq_avg, fs = fs)
->>>>>>> main
     else:
         p = Path(filename)
         if not p.exists():
@@ -228,11 +181,7 @@ def get_measurement_vectors(filename, real_data=True, subsample_points=10, filte
         measureddata = data['array_data']
         grid_measured = data['grid_measured']
         c = 343.
-<<<<<<< HEAD
     return refdata, fs, grid, measureddata, grid_measured, c
-=======
-    return refdata, fs, grid, measureddata, grid_measured, c, source_pos, fnyq
->>>>>>> main
 
 
 def save_checkpoint(directory, filepath, obj, remove_below_step=None):
@@ -473,12 +422,7 @@ class FCN():
                  c=343.,
                  output_scaler=None,
                  fs = 48e3,
-<<<<<<< HEAD
                  map_input = True):
-=======
-                 map_input = True,
-                 source_pos = None):
->>>>>>> main
         if device is None:
             self.device = 'cpu'
         else:
@@ -516,10 +460,6 @@ class FCN():
                        scale_input = map_input).to(device)
         'test with cosine similarity loss'
         self.cosine_sim = nn.CosineEmbeddingLoss()
-<<<<<<< HEAD
-=======
-        self.source_pos = source_pos
->>>>>>> main
 
     def cylindrical_coords(self, input):
         x, y, t = input[:, 0, :].flatten(), input[:, 1, :].flatten(), input[:, 2, :].flatten()
@@ -541,21 +481,13 @@ class FCN():
 
         return loss_u, norm_ratio, std_ratio, maxabs_ratio
 
-<<<<<<< HEAD
     def loss_PDE(self, input):
-=======
-    def loss_PDE(self, input, loss_pde):
->>>>>>> main
 
         g = input.clone()
         g = self.scale_f(g)
         g.requires_grad = True
 
-<<<<<<< HEAD
-        k = 2*np.pi*g[:, 2]/self.c
-=======
-        k = 2*np.pi*g[:, 2] # k = 2*π*f/c where c = 1 m/s (normalised)
->>>>>>> main
+        k = 2*np.pi*g[:, 2]#/self.c
         pnet = self.dnn(g)
 
         # pnet = self.output_scaler.backward_rir(pressure)
@@ -577,34 +509,19 @@ class FCN():
         # f = p_tt - self.c * (p_xx + p_yy)
         f = p_xx + p_yy + k**2 * torch.view_as_complex(pnet)
 
-<<<<<<< HEAD
         loss_f = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
-=======
-        loss_f = self.loss_function_pde(loss_pde*f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
->>>>>>> main
 
         return loss_f
 
     def loss_bc(self, input):
-<<<<<<< HEAD
         g = input.clone()
         g = self.scale_f(g)
         g.requires_grad = True
         k = 2*np.pi*g[:, 2]/self.c
-=======
-
-        g = input.clone()
-        g = self.scale_f(g)
-        g.requires_grad = True
-        k = 2*np.pi*g[:, 2]
-        omega = 2*np.pi*g[:, 2]
-        rho = 1.2
->>>>>>> main
         r, phi = self.cylindrical_coords(input)
         sin_phi = torch.sin(phi)
         cos_phi = torch.cos(phi)
 
-<<<<<<< HEAD
         # if self.ansatz_formulation:
         #     pressure = (self.dnn(g)*plane_wave(g[0,2],
         #                                        1.,
@@ -612,8 +529,6 @@ class FCN():
         #                                        self.r_source,
         #                                        g[0, :2])).sum(axis = -1).unsqueeze(0)
         # else:
-=======
->>>>>>> main
         pnet = self.dnn(g)
 
         # pnet = self.output_scaler.backward_rir(pressure)
@@ -625,28 +540,19 @@ class FCN():
         p_x = p_r_re[:, 0] + 1j*p_r_im[:, 0]
         p_y = p_r_re[:, 1] + 1j*p_r_im[:, 1]
         dp_dr = sin_phi * p_y + cos_phi * p_x
-<<<<<<< HEAD
         # Sommerfeld radiation condition (eq. 4.5.5 - "Acoustics" - Allan D. Pierce)
         # f = r * (dp_dr + 1 / self.c * dp_dt)
         # f = r * (dp_dr + dp_dt)
         f = dp_dr -1j*k*torch.view_as_complex(pnet)
-=======
-        # implicit sommerfeld
-        u = -1/(1j * omega * rho) * dp_dr
-
-        f = u - torch.view_as_complex(pnet)/(rho * 1) # c = 1 m/s (normalised)
->>>>>>> main
         bcs_loss = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
         return bcs_loss
 
     def loss_ic(self, input):
         # x,y,t = input
         g = input.clone()
-        g = self.scale_f(g)
         g.requires_grad = True
 
         pnet = self.dnn(g).T
-<<<<<<< HEAD
         k = 2*np.pi*g[:, 2]/self.c
         r, phi = self.cylindrical_coords(input)
         sin_phi = torch.sin(phi)
@@ -676,38 +582,6 @@ class FCN():
         loss_val = self.lambda_data * loss_p + self.lambda_pde * loss_f + self.lambda_bc * loss_bc \
                    + self.lambda_ic * loss_ic
 
-=======
-        # k = 2*np.pi*g[:, 2]
-        r, phi = self.cylindrical_coords(input)
-        sin_phi = torch.sin(phi)
-        cos_phi = torch.cos(phi)
-
-        # pnet = self.output_scaler.backward_rir(pressure)
-
-        p_r_re = autograd.grad(pnet[0], g, torch.ones_like(pnet[0]),
-                                create_graph=True)[0]
-        p_r_im = autograd.grad(pnet[1], g, torch.ones_like(pnet[1]),
-                                create_graph=True)[0]
-        p_x = p_r_re[:, 0] + 1j*p_r_im[:, 0]
-        p_y = p_r_re[:, 1] + 1j*p_r_im[:, 1]
-        dp_dr = sin_phi * p_y + cos_phi * p_x
-        f = dp_dr
-        ics_loss = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1))) + \
-                   (torch.abs(pnet[0] + 1j*pnet[1])**2).mean()
-        return ics_loss
-
-    def loss(self, inpuf_data, inpuf_pde, inpuf_ic, pm, data_loss_weights):
-        if self.output_scaler is not None:
-            pm = self.output_scaler.forward_rir(pm)
-        loss_p, norm_ratio, std_ratio, maxabs_ratio = self.loss_data(inpuf_data, pm, data_loss_weights)
-        loss_f = self.loss_PDE(inpuf_pde, self.lambda_pde)
-        loss_bc = self.loss_bc(inpuf_pde)
-        loss_ic = self.loss_ic(inpuf_ic)
-
-        loss_val = self.lambda_data * loss_p +  loss_f + self.lambda_bc * loss_bc \
-                   + self.lambda_ic * loss_ic
-
->>>>>>> main
         return loss_val, loss_p, loss_f, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio
 
     'callable for optimizer'
@@ -818,10 +692,6 @@ class PINNDataset(Dataset):
                  counter=1,
                  maxcounter=1e5,
                  curriculum_training=False,
-<<<<<<< HEAD
-=======
-                 lf_weighting_fn = False,
->>>>>>> main
                  batch_size = 300):
         self.tfnp = lambda x: torch.from_numpy(x).float()
         self.tfnp_cmplx = lambda x: torch.from_numpy(x).type(torch.complex64)
@@ -852,14 +722,7 @@ class PINNDataset(Dataset):
         self.fmax = self.f[self.f_ind].max()
         self.counter_fun = lambda x, n: int(n * x)
         decay_rate = np.linspace(0, 1, len(self.f))
-<<<<<<< HEAD
         self.f_weight = 10*(1-.98)**decay_rate
-=======
-        if lf_weighting_fn:
-            self.f_weight = 10*(1-.98)**decay_rate
-        else:
-            self.f_weight = np.ones_like(decay_rate)
->>>>>>> main
 
     def __len__(self):
         return 1
