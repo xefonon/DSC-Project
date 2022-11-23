@@ -1,6 +1,6 @@
 import numpy as np
-from sklearn import linear_model
 import h5py
+from sklearn import linear_model
 from sklearn.neighbors import NearestNeighbors
 import time
 from utils_soundfields import plot_sf
@@ -11,6 +11,10 @@ import click
 import cvxpy as cp
 import librosa
 from sklearn.preprocessing import MaxAbsScaler, Normalizer
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import make_scorer
 
 # %%
 def reference_grid(steps, xmin=-.7, xmax=.7, z=0.):
@@ -58,7 +62,7 @@ def wavenumber(f, n_PW, c=343):
     return k_grid
 
 
-def get_sensing_mat(f, n_pw, X, Y, Z, k_samp=None, c=343, mesh=True, normalise=False):
+def plane_wave_sensing_matrix(f, sensor_grid, n_pw=1600, k_samp=None, c=343., normalise=False):
     # Basis functions for coefficients
     if k_samp is None:
         k_samp = wavenumber(f, n_pw, c=c)
@@ -72,20 +76,18 @@ def get_sensing_mat(f, n_pw, X, Y, Z, k_samp=None, c=343, mesh=True, normalise=F
         ky = np.squeeze(ky, 1)
         kz = np.squeeze(kz, 1)
     k_out = [kx, ky, kz]
-    H = build_sensing_mat(kx, ky, kz, X, Y, Z, mesh=mesh)
+    H = build_sensing_mat(k_out, sensor_grid)
     if normalise:
         column_norm = np.linalg.norm(H, axis=1, keepdims=True)
         H = H / column_norm
     return H, k_out
 
 
-def build_sensing_mat(kx, ky, kz, X, Y, Z, mesh=False):
-    if mesh:
-        H = np.exp(-1j * (np.einsum('ij,k -> ijk', kx, X.flatten()) + np.einsum('ij,k -> ijk', ky, Y.flatten()) +
-                          np.einsum('ij,k -> ijk', kz, Z.flatten())))
-    else:
-        H = np.exp(-1j * (np.einsum('ij,k -> ijk', kx, X) + np.einsum('ij,k -> ijk', ky, Y) +
-                          np.einsum('ij,k -> ijk', kz, Z)))
+def build_sensing_mat(k_sampled, sensor_grid):
+    kx, ky, kz = k_sampled
+    X, Y, Z = sensor_grid
+    H = np.exp(-1j * (np.einsum('ij,k -> ijk', kx, X) + np.einsum('ij,k -> ijk', ky, Y) +
+                      np.einsum('ij,k -> ijk', kz, Z)))
     return H.squeeze(0).T
 
 
@@ -113,6 +115,7 @@ def subsample_gridpoints(grid, subsample=5):
     distances, indices = nbrs.kneighbors(newgrid.T)
     return grid[:, indices.squeeze(-1)], indices.squeeze(-1)
 
+
 def speed_of_sound(T):
     """
     speed_of_sound(T)
@@ -126,6 +129,7 @@ def speed_of_sound(T):
     """
     c = 20.05 * np.sqrt(273.15 + T)
     return c
+
 
 def get_measurement_vectors(filename, subsample_points=10, frequency_domain=True):
     data_dict = load_measurement_data(filename)
@@ -164,11 +168,12 @@ def stack_real_imag_H(mat):
     return mat_stack
 
 
-def LASSOLARS_regression(H, p, n_plwav=None, cv=True):
+def LASSOLARS_regression_CV(H, p, n_plwav=None, cv=True):
     """
     Compressive Sensing - Soundfield Reconstruction
     Parameters
     ----------
+    cv
     H : Transfer Matrix.
     p : Measured Pressure.
     n_plwav : number of plane waves.
@@ -185,18 +190,64 @@ def LASSOLARS_regression(H, p, n_plwav=None, cv=True):
         p = np.concatenate((p.real, p.imag))
 
     if cv:
-        reg_las = linear_model.LassoLarsCV(cv=5, fit_intercept=True, normalize=True)
+        reg_las = make_pipeline(MaxAbsScaler(),
+                                linear_model.LassoLarsCV(cv=100, fit_intercept=False,
+                                                         n_jobs=5, normalize=False,
+                                                         verbose=True, max_iter=2000))
+        # reg_las =  linear_model.LassoLarsCV(cv=100, fit_intercept=False,
+        #                                                  n_jobs=10, normalize=False,
+        #                                                  verbose=True, max_iter=5000)
+
     else:
         alpha_lass = 2.62e-6
-        reg_las = linear_model.LassoLars(alpha=alpha_lass, fit_intercept=True, normalize=True)
+        reg_las = linear_model.LassoLars(alpha=alpha_lass, fit_intercept=True, normalize=False, max_iter=2000)
     # reg_las = linear_model.LassoLarsCV( )
     # alphas = np.logspace(-14, 2, 17))#cv=5, max_iter = 1e5, tol=1e-3)
 
     reg_las.fit(H, p)
-    q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
+    q_las = reg_las[1].coef_[:n_plwav] + 1j * reg_las[1].coef_[n_plwav:]
     try:
         alpha_lass = reg_las.alpha_
     except:
+        alpha_lass = None
+        pass
+
+    return q_las, alpha_lass
+def LASSOLARS_regression_IC(H, p, n_plwav=None, Noise_var = None):
+    """
+    Compressive Sensing - Soundfield Reconstruction
+    Parameters
+    ----------
+    cv
+    H : Transfer Matrix.
+    p : Measured Pressure.
+    n_plwav : number of plane waves.
+    Returns
+    -------
+    q_las : Plane wave coefficients.
+    alpha_lass : Regularizor.
+    """
+    if n_plwav is None:
+        n_plwav = H.shape[-1]
+    if H.dtype == complex:
+        H = stack_real_imag_H(H)
+    if p.dtype == complex:
+        p = np.concatenate((p.real, p.imag))
+
+    reg_las = make_pipeline(MaxAbsScaler(),
+                                linear_model.LassoLarsIC( criterion='aic', fit_intercept=False,
+                                                         normalize=False,verbose=True, max_iter=50000,
+                                                          noise_variance= Noise_var))
+
+    # reg_las = linear_model.LassoLarsCV( )
+    # alphas = np.logspace(-14, 2, 17))#cv=5, max_iter = 1e5, tol=1e-3)
+    np.linalg.lstsq(H, p)
+    reg_las.fit(H, p)
+    q_las = reg_las[1].coef_[:n_plwav] + 1j * reg_las[1].coef_[n_plwav:]
+    try:
+        alpha_lass = reg_las.alpha_
+    except:
+        alpha_lass = None
         pass
 
     return q_las, alpha_lass
@@ -222,7 +273,7 @@ def OrthoMatchPursuit_regression(H, p, n_plwav=None):
     if p.dtype == complex:
         p = np.concatenate((p.real, p.imag))
 
-    reg_las = linear_model.OrthogonalMatchingPursuitCV(cv=5, max_iter=1e4)
+    reg_las = linear_model.OrthogonalMatchingPursuit(cv=5, normalize = False, max_iter=1e4)
     # reg_las = linear_model.LassoLarsCV( )
     # alphas = np.logspace(-14, 2, 17))#cv=5, max_iter = 1e5, tol=1e-3)
 
@@ -230,13 +281,24 @@ def OrthoMatchPursuit_regression(H, p, n_plwav=None):
     q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
     return q_las
 
+
 def real2complex(q):
-    n = q.size//2
+    n = q.size // 2
     return q[:n] + 1j * q[n:]
+
 
 def comlpex2real(p):
     return np.concatenate((p.real, p.imag))
 
+def mac_similarity(a,b):
+    return abs(a.T.conj() @ b)**2 / ((a.T.conj()@a) * (b.T.conj()@b))
+def MakeGridSearchCV(model, parameters, criterion = 'nmse', cv = 100):
+
+    if criterion == 'nmse':
+        score = make_scorer(nmse, greater_is_better=False)
+    elif criterion == 'mac':
+        score = make_scorer(mac_similarity, greater_is_better=True)
+    return GridSearchCV(model, parameters, scoring=score, cv=cv)
 
 def Ridge_regression(H, p, n_plwav=None, cv=True):
     """
@@ -252,8 +314,8 @@ def Ridge_regression(H, p, n_plwav=None, cv=True):
     alpha_titk : Regularizor
     """
     if cv:
-        reg = linear_model.RidgeCV(cv=5, alphas=np.geomspace(1e-7, 1e-9, 80),
-                                   fit_intercept=True)
+        reg = linear_model.RidgeCV(cv=100, alphas=np.geomspace(1e-3, 1e-9, 80),
+                                   fit_intercept=False)
     else:
         alpha_titk = 2.8e-5
         reg = linear_model.Ridge(alpha=alpha_titk, fit_intercept=True)
@@ -296,8 +358,10 @@ def LASSO_regression(H, p, n_plwav=None, cv=True):
         p = np.concatenate((p.real, p.imag))
 
     if cv:
-        reg_las = linear_model.LassoCV(cv=3, alphas=np.geomspace(1e-3, 1e-10, 30),
-                                       fit_intercept=True, normalize=False, tol=1e-4, n_jobs=8)
+        reg_las = linear_model.LassoCV(cv=100, alphas=np.geomspace(1e-3, 1e-10, 80),
+                                       fit_intercept=True,
+                                       normalize=False, verbose=True,
+                                       tol=1e-4, n_jobs=10)
     else:
         alpha_lass = 2.62e-6
         reg_las = linear_model.Lasso(alpha=alpha_lass,
@@ -312,7 +376,7 @@ def LASSO_regression(H, p, n_plwav=None, cv=True):
     return q_las, alpha_lass
 
 
-def LASSO_regression_celer(H, p, n_plwav=None):
+def LASSO_cv_regression_celer(H, p, n_plwav=None, n_jobs=10):
     """
     Compressive Sensing - Soundfield Reconstruction
     Parameters
@@ -332,8 +396,8 @@ def LASSO_regression_celer(H, p, n_plwav=None):
     if p.dtype == complex:
         p = np.concatenate((p.real, p.imag))
 
-    reg_las = LassoCV(cv=3, alphas=np.geomspace(1e-2, 1e-8, 20),
-                      fit_intercept=True, tol=1e-4, n_jobs=12)
+    reg_las = LassoCV(cv=100, alphas=np.geomspace(1e-2, 1e-8, 50),
+                      fit_intercept=False, tol=1e-4, n_jobs=n_jobs)
     # reg_las = Lasso( alpha=1e-2,fit_intercept=True, tol = 1e-6,max_iter=1000)
 
     reg_las.fit(H, p)
@@ -345,17 +409,18 @@ def LASSO_regression_celer(H, p, n_plwav=None):
         pass
     return q_las, alpha_lass
 
-def lasso_cvx_cmplx(H, p, n_plwav=None, Noise_lvl=None):
+
+def lasso_cvx_cmplx(H, p, n_plwav=None, Noise_var=None, max_iters=5000):
     if n_plwav is None:
         n_plwav = H.shape[-1]
-    if Noise_lvl is None:
-        Noise_lvl = .1
+    if Noise_var is None:
+        Noise_var = 1e-6
     # Create variable.
-    x_l1 = cp.Variable(shape=n_plwav, complex = True)
-    epsilon = abs(Noise_lvl)
+    x_l1 = cp.Variable(shape=n_plwav, complex=True)
+    epsilon = Noise_var
     # Create constraint.
     # constraints = [cp.norm(H @ x_l1 - p, 2, axis = ) <= epsilon]
-    constraints = [cp.norm2(H @ x_l1 - p)<= epsilon]
+    constraints = [cp.norm2(H @ x_l1 - p) <= epsilon]
 
     # Form objective.
     obj = cp.Minimize(cp.norm(x_l1, 1))
@@ -363,7 +428,8 @@ def lasso_cvx_cmplx(H, p, n_plwav=None, Noise_lvl=None):
     # Form and solve problem.
     prob = cp.Problem(obj, constraints)
     # works with cp.SCS, max_iters = 10000
-    prob.solve(solver=cp.SCS, verbose=True, max_iters = 20000)
+    prob.solve(solver=cp.SCS, verbose=True, max_iters=max_iters,
+               use_indirect=True, alpha=1.5, warm_start=True)
     print("status: {}".format(prob.status))
 
     # Number of nonzero elements in the solution (its cardinality or diversity).
@@ -371,9 +437,11 @@ def lasso_cvx_cmplx(H, p, n_plwav=None, Noise_lvl=None):
     # x = x_l1.value[:n_plwav] + 1j * x_l1.value[n_plwav:]
     nnz_l1 = (np.absolute(x_l1.value) > epsilon).sum()
     print('Found a feasible x in R^{} that has {} nonzeros.'.format(n_plwav, nnz_l1))
+    print('Lagrangian multiplier: {}'.format(constraints[0].dual_value))
     print("optimal objective value: {}".format(obj.value))
 
     return x_l1.value
+
 
 def lasso_cvx(H, p, n_plwav=None, Noise_lvl=None):
     if n_plwav is None:
@@ -399,7 +467,7 @@ def lasso_cvx(H, p, n_plwav=None, Noise_lvl=None):
 
     # Form and solve problem.
     prob = cp.Problem(obj, constraints)
-    prob.solve(solver =  'SCIPY')
+    prob.solve(solver='SCIPY')
     print("status: {}".format(prob.status))
 
     # Number of nonzero elements in the solution (its cardinality or diversity).
@@ -411,8 +479,8 @@ def lasso_cvx(H, p, n_plwav=None, Noise_lvl=None):
 
     return x
 
-def lasso_log_cvx(H, p, n_plwav = None, Noise_lvl = None, NUM_RUNS = 15):
 
+def lasso_log_cvx(H, p, n_plwav=None, Noise_lvl=None, NUM_RUNS=15):
     nnzs_log = np.array(())
     if n_plwav is None:
         n_plwav = H.shape[-1]
@@ -429,21 +497,21 @@ def lasso_log_cvx(H, p, n_plwav = None, Noise_lvl = None, NUM_RUNS = 15):
     # Create variable.
     delta = Noise_lvl.max()
     # Store W as a positive parameter for simple modification of the problem.
-    W = cp.Parameter(shape=2 *n_plwav, nonneg=True);
+    W = cp.Parameter(shape=2 * n_plwav, nonneg=True);
     x_log = cp.Variable(shape=2 * n_plwav)
 
     # Initial weights.
     W.value = np.ones(2 * n_plwav);
 
     # Setup the problem.
-    obj = cp.Minimize( W.T@cp.abs(x_log) ) # sum of elementwise product
+    obj = cp.Minimize(W.T @ cp.abs(x_log))  # sum of elementwise product
     constraints = [H @ x_log <= p]
 
     # constraints = [A*x_log <= b]
     prob = cp.Problem(obj, constraints)
     x_all = []
     # Do the iterations of the problem, solving and updating W.
-    for k in range(1, NUM_RUNS+1):
+    for k in range(1, NUM_RUNS + 1):
         # Solve problem.
         # The ECOS solver has known numerical issues with this problem
         # so force a different solver.
@@ -460,10 +528,11 @@ def lasso_log_cvx(H, p, n_plwav = None, Noise_lvl = None, NUM_RUNS = 15):
               ' with {} nonzeros...'.format(k, 2 * n_plwav, nnz))
 
         # Adjust the weights elementwise and re-iterate
-        W.value = np.ones(2 * n_plwav)/(delta*np.ones(2 * n_plwav) + np.absolute(x_log.value))
+        W.value = np.ones(2 * n_plwav) / (delta * np.ones(2 * n_plwav) + np.absolute(x_log.value))
         x_all.append(x_log.value[:n_plwav] + 1j * x_log.value[n_plwav:])
     # x = x_log.value[:n_plwav] + 1j * x_log.value[n_plwav:]
     return x_all, nnzs_log
+
 
 # %%
 # @click.command()
@@ -507,22 +576,22 @@ pref, fs, grid, pm, grid_measured, noise, f_vec, c = get_measurement_vectors(fil
 taps = pref.shape[-1]
 noise = noise[:, :taps]
 
-plt.magnitude_spectrum(noise.mean(0), Fs = 8000, scale = 'dB')
-plt.magnitude_spectrum(pref.mean(0), Fs = 8000, scale = 'dB')
+plt.magnitude_spectrum(noise.mean(0), Fs=8000, scale='dB')
+plt.magnitude_spectrum(pref.mean(0), Fs=8000, scale='dB')
 plt.xlim([0, 5000])
 plt.show()
 
 f_vec = np.fft.rfftfreq(pref.shape[-1], d=1 / fs)
 Pref = np.fft.rfft(pref)
 Pm = np.fft.rfft(pm)
-Noise = np.fft.rfft(noise, n = pm.shape[-1])
+Noise = np.fft.rfft(noise, n=pm.shape[-1])
 
 # for i in range(200, 215):
 #     plt.hist(noise[i], bins = 400)
 #
 # plt.show()
-
-f = 1500.
+# %%
+f = 500.
 f_ind = np.argmin(f_vec <= f)
 f = f_vec[f_ind]
 # pm_cat = np.concatenate((pm.real[None, :, f_ind], pm.imag[None,:,  f_ind]))
@@ -533,24 +602,21 @@ f = f_vec[f_ind]
 # pref_ = transformer2.transform(pref_cat)
 # pm_ = pm_[0] + 1j*pm_[1]
 # pref_ = pref_[0] + 1j*pref_[1]
-H, k = get_sensing_mat(f, n_pw=1800,
-                       X=grid_measured[0],
-                       Y=grid_measured[1],
-                       Z=grid_measured[2],
-                       c = c, normalise= False)
 
-Href, _ = get_sensing_mat(f,
-                          k_samp=k,
-                          n_pw=1800,
-                          X=grid[0],
-                          Y=grid[1],
-                          Z=grid[2],
-                          c = c, normalise= False)
+H, k = plane_wave_sensing_matrix(f, n_pw=1800,
+                                 sensor_grid=grid_measured,
+                                 c=c, normalise=False)
+
+Href, _ = plane_wave_sensing_matrix(f,
+                                    k_samp=k,
+                                    n_pw=1800,
+                                    sensor_grid=grid,
+                                    c=c, normalise=False)
 
 # startlars = time.time()
 # coeffs_larsLasso, alpha_larsLasso = LASSOLARS_regression(H, pm_)
 # endlars = time.time()
-Pref_ridge = comlpex2real(Pm[:, f_ind])
+# Pref_ridge = comlpex2real(Pm[:, f_ind])
 
 # transformer = M().fit(Pref_ridge.reshape(-1, 1))
 # Pref_ridge = transformer.transform(Pref_ridge.reshape(-1, 1))
@@ -558,26 +624,29 @@ Pref_ridge = Pm[:, f_ind]
 
 #
 Pref_lass = Pm[:, f_ind]
-#%%
+# %%
 startridge = time.time()
 coeffs_ridge, alpha_ridge = Ridge_regression(H, Pref_ridge)
 endridge = time.time()
-#%%
+
+# %%
 startlass = time.time()
 # coeffs_lasso, alpha_lasso = LASSO_regression_celer(H, pm[:, f_ind])
 # coeffs_lasso = lasso_cvx_cmplx(H, Pref_lass, Noise_lvl= Noise[:, f_ind].mean())
-coeffs_lasso = lasso_cvx_cmplx(H, Pref_lass, Noise_lvl= Noise[:, f_ind].mean())
+coeffs_lasso = lasso_cvx_cmplx(H, Pref_lass, Noise_var=abs(Noise[:, f_ind]).mean())
 # coeffs_lasso_all,  nlogs = lasso_log_cvx(H, Pref_lass, Noise_lvl= Noise[:, f_ind].mean())
 endlass = time.time()
-#%%
-# startlass = time.time()
-# coeffs_lasso, alpha_lasso = LASSO_regression_celer(H, pm[:, f_ind])
+# %%
+startlass = time.time()
+# coeffs_lasso2, alpha_lasso = LASSOLARS_regression_CV(H, Pref_lass)
+# coeffs_lasso2, alpha_lasso = LASSOLARS_regression_IC(H, Pref_lass, Noise_var = Noise[:, f_ind].var())
+coeffs_lasso2, alpha_lasso = LASSO_cv_regression_celer(H, Pref_lass)
+# coeffs_lasso, alpha_lasso = LASSO_regression(H, Pref_lass)
 # coeffs_lasso_sk = LASSO_regression(H, Pref_lass)
 # coeffs_lasso_all,  nlogs = lasso_log_cvx(H, Pref_lass, Noise_lvl= Noise[:, f_ind].mean())
-# endlass = time.time()
+endlass = time.time()
 # %%
 rmse = lambda x, y: np.sqrt((abs(y - x) ** 2).mean())
-
 
 
 def nmse(y_true, y_predicted, db=True):
@@ -589,26 +658,28 @@ def nmse(y_true, y_predicted, db=True):
 
 
 # plars = np.squeeze(Href) @ coeffs_larsLasso
-plass = np.squeeze(Href) @ coeffs_lasso
+plass = Href @ coeffs_lasso
+plass2 = Href @ coeffs_lasso2
 # plass = np.squeeze(Href) @ coeffs_lasso_sk[0]
-pridge = np.squeeze(Href) @ coeffs_ridge
+pridge = Href @ coeffs_ridge
 
 # pridge = transformer.inverse_transform(comlpex2real(pridge).reshape(-1, 1))
 # pridge = real2complex(pridge).squeeze(-1)
 #
 # plass = transformer.inverse_transform(comlpex2real(plass).reshape(-1, 1))
 # plass = real2complex(plass).squeeze(-1)
-alpha_lasso = None
+# alpha_lasso = None
 # portho = np.squeeze(Href) @ coeffs_ortho
 # print("alpha Lars Lasso: {}, time: {:.4f}, error: {:.5f}".format(alpha_larsLasso, -(startlars - endlars),
 #                                                                  rmse(plars, pref_)))
 print("alpha Ridge: {}, time: {:.4f}, error: {:.5f}".format(alpha_ridge, -(startridge - endridge),
-                                                            nmse(pridge, Pref[:, f_ind])))
-print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format(None, -(startlass - endlass), nmse(plass,  Pref[:, f_ind])))
+                                                            nmse(Pref[:, f_ind], pridge )))
+print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format(None, -(startlass - endlass), nmse(Pref[:, f_ind], plass)))
+print("alpha Lasso: {}, time: {:.4f}, error: {:.5f}".format(None, -(startlass - endlass), nmse(Pref[:, f_ind], plass2)))
 
 # %%
 fig = plt.figure()
-ax = fig.add_subplot(1, 3, 1)
+ax = fig.add_subplot(1, 4, 1)
 ax, _ = plot_sf(Pref[:, f_ind], grid[0], grid[1], ax=ax)
 ax.set_title('truth')
 # ax = fig.add_subplot(1, 4, 2)
@@ -617,11 +688,14 @@ ax.set_title('truth')
 # ax = fig.add_subplot(1, 4, 3)
 # ax, _ = plot_sf(plass, grid[0],grid[1], ax=ax)
 # ax.set_title('Lasso')
-ax = fig.add_subplot(1, 3, 2)
+ax = fig.add_subplot(1, 4, 2)
 ax, _ = plot_sf(pridge, grid[0], grid[1], ax=ax)
 ax.set_title('Ridge')
-ax = fig.add_subplot(1, 3, 3)
+ax = fig.add_subplot(1, 4, 3)
 ax, _ = plot_sf(plass, grid[0], grid[1], ax=ax)
+ax.set_title('Sparse')
+ax = fig.add_subplot(1, 4, 4)
+ax, _ = plot_sf(plass2, grid[0], grid[1], ax=ax)
 ax.set_title('Lasso')
 # ax = fig.add_subplot(1, 5, 5)
 # ax, _ = plot_sf(portho, grid[0],grid[1], ax=ax)
