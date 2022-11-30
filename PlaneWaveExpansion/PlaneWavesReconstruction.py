@@ -16,6 +16,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import make_scorer
 
+
 # %%
 def reference_grid(steps, xmin=-.7, xmax=.7, z=0.):
     x = np.linspace(xmin, xmax, steps)

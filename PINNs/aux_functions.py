@@ -109,7 +109,6 @@ class unit_norm_normalization:
 
         self.norm = self.tfnp(self.l2_norm(data)[None, None])
 
-<<<<<<< HEAD
     def forward_rir(self, input):
         return input / self.norm
 
@@ -135,7 +134,6 @@ class normalize_rirs:
         return self.unscaling(input)
 
 
-=======
     def forward_rir(self, input):
         return input / self.norm
 
@@ -161,7 +159,6 @@ class normalize_rirs:
         return self.unscaling(input)
 
 
->>>>>>> main
 class maxabs_normalize_rirs:
     def __init__(self, data, device='cuda', l_inf_norm = 0.1):
         self.data = data
@@ -554,11 +551,7 @@ class FCN():
         # f = p_tt - self.c * (p_xx + p_yy)
         f = p_xx + p_yy - 1. * p_tt
 
-<<<<<<< HEAD
-        loss_f = self.loss_function_pde(f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
-=======
         loss_f = self.loss_function_pde(loss_pde*f.view(-1, 1), torch.zeros_like(f.view(-1, 1)))
->>>>>>> main
 
         return loss_f
 
@@ -621,19 +614,11 @@ class FCN():
         if self.output_scaler is not None:
             pm = self.output_scaler.forward_rir(pm)
         loss_p, norm_ratio, std_ratio, maxabs_ratio = self.loss_data(input_data, pm, data_loss_weights)
-<<<<<<< HEAD
-        loss_f = self.loss_PDE(input_pde)
-        loss_bc = self.loss_bc(input_pde)
-        loss_ic = self.loss_ic(input_ic)
-
-        loss_val = self.lambda_data * loss_p + self.lambda_pde * loss_f + self.lambda_bc * loss_bc \
-=======
         loss_f = self.loss_PDE(input_pde, self.lambda_pde)
         loss_bc = self.loss_bc(input_pde)
         loss_ic = self.loss_ic(input_ic)
 
         loss_val = self.lambda_data * loss_p + loss_f + self.lambda_bc * loss_bc \
->>>>>>> main
                    + self.lambda_ic * loss_ic
 
         return loss_val, loss_p, loss_f, loss_bc, loss_ic, norm_ratio, std_ratio, maxabs_ratio
@@ -759,10 +744,7 @@ class PINNDataset(Dataset):
                  counter=1,
                  maxcounter=1e5,
                  curriculum_training=False,
-<<<<<<< HEAD
-=======
                  t_weighting_factor = False,
->>>>>>> main
                  batch_size = 300):
         self.tfnp = lambda x: torch.from_numpy(x).float()
         self.curriculum_training = curriculum_training
@@ -792,14 +774,10 @@ class PINNDataset(Dataset):
         self.tmax = self.t[self.t_ind].max()
         self.counter_fun = lambda x, n: int(n * x)
         decay_rate = np.linspace(0, 1, len(self.t))
-<<<<<<< HEAD
-        self.t_weight = 10*(1-.98)**decay_rate
-=======
         if t_weighting_factor:
             self.t_weight = 10*(1-.98)**decay_rate
         else:
             self.t_weight = np.ones_like(decay_rate)
->>>>>>> main
 
         # self.batch_size = batch_size
         # self.n_time_instances = int(0.6 * self.batch_size)

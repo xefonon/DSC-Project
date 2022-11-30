@@ -428,9 +428,9 @@ class FCN():
         else:
             self.device = device
         if loss_fn in ['mse', 'MSE']:
-            self.loss_function = nn.MSELoss(reduction='mean')
-            # self.loss_function = lambda y_hat, y : ((torch.abs(y - y_hat)**2)/torch.abs(y)**2).mean()
-            self.loss_function_pde =  nn.MSELoss(reduction='mean')
+            # self.loss_function = nn.MSELoss(reduction='mean')
+            self.loss_function = lambda y_hat, y : ((torch.abs(y - y_hat)**2)).mean()
+            self.loss_function_pde =  lambda y_hat, y : ((torch.abs(y - y_hat)**2)).mean()
         else:
             self.loss_function = nn.L1Loss(reduction='mean')
             self.loss_function_pde =  nn.L1Loss(reduction='mean')

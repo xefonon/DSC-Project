@@ -104,7 +104,7 @@ if device == 'cuda':
     type=float,
     help="Max frequency in Hertz, to which the network will learn the Helmholtz equation")
 @click.option(
-    "--loss_fn", default='mae',
+    "--loss_fn", default='mse',
     type=click.Choice(['MAE', 'MSE'], case_sensitive=False),
     help="Loss function to use, (Mean Square Error or Mean Absolute Error)")
 @click.option(
@@ -117,7 +117,7 @@ if device == 'cuda':
     type=int,
     help="Number of hidden layers")
 @click.option(
-    "--curriculum_training", default=True,
+    "--curriculum_training", default=False,
     type=bool,
     help="Increase time vector (training and PDE data) incrementally in a linear manner")
 @click.option(

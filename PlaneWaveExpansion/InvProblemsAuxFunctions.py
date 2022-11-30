@@ -7,7 +7,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import make_scorer
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
-from celer import LassoCV
+# from celer import LassoCV
 import click
 import cvxpy as cp
 import librosa
@@ -24,7 +24,10 @@ from tqdm import tqdm
 import matplotlib as mpl
 import h5py
 import time
+import os
 np.random.seed(42)
+numpyro.set_platform("gpu")
+numpyro.enable_x64()
 
 """ Temporary / problem specific functions"""
 
@@ -208,7 +211,7 @@ def scale_maxabs(data, constant = 1):
 def rescale_maxabs(data, scale):
     return data * scale
 
-def standardize(data, remove_bias = False):
+def standardise(data, remove_bias = False):
     if remove_bias:
         mu = data.mean(axis = -1)[..., None]
     else:
@@ -275,7 +278,7 @@ def Make_SKlearn_pipeline(normalization='maxabs', linear_model='larslasso'):
     lin_mod = choose_linear_model(choice=linear_model)
     if normalization == 'maxabs':
         pipe = make_pipeline(MaxAbsScaler(), lin_mod)
-    elif normalization == 'standardize':
+    elif normalization == 'standardise':
         pipe = make_pipeline(StandardScaler(), lin_mod)
     return pipe
 
@@ -573,38 +576,38 @@ def lasso_cvx_cmplx(H, p, n_plwav=None, Noise_var=None, max_iters=5000):
 """ CELER """
 
 
-def LASSO_cv_regression_celer(H, p, n_plwav=None, n_jobs=10):
-    """
-    Compressive Sensing - Soundfield Reconstruction
-    Parameters
-    ----------
-    H : Transfer Matrix.
-    p : Measured Pressure.
-    n_plwav : number of plane waves.
-    Returns
-    -------
-    q_las : Plane wave coefficients.
-    alpha_lass : Regularizor.
-    """
-    if n_plwav is None:
-        n_plwav = H.shape[-1]
-    if H.dtype == complex:
-        H = stack_real_imag_H(H)
-    if p.dtype == complex:
-        p = np.concatenate((p.real, p.imag))
-
-    reg_las = LassoCV(cv=100, alphas=np.geomspace(1e-2, 1e-8, 50),
-                      fit_intercept=False, tol=1e-4, n_jobs=n_jobs)
-    # reg_las = Lasso( alpha=1e-2,fit_intercept=True, tol = 1e-6,max_iter=1000)
-
-    reg_las.fit(H, p)
-    q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
-    try:
-        alpha_lass = reg_las.alpha_
-    except:
-        alpha_lass = None
-        pass
-    return q_las, alpha_lass
+# def LASSO_cv_regression_celer(H, p, n_plwav=None, n_jobs=10):
+#     """
+#     Compressive Sensing - Soundfield Reconstruction
+#     Parameters
+#     ----------
+#     H : Transfer Matrix.
+#     p : Measured Pressure.
+#     n_plwav : number of plane waves.
+#     Returns
+#     -------
+#     q_las : Plane wave coefficients.
+#     alpha_lass : Regularizor.
+#     """
+#     if n_plwav is None:
+#         n_plwav = H.shape[-1]
+#     if H.dtype == complex:
+#         H = stack_real_imag_H(H)
+#     if p.dtype == complex:
+#         p = np.concatenate((p.real, p.imag))
+#
+#     reg_las = LassoCV(cv=100, alphas=np.geomspace(1e-2, 1e-8, 50),
+#                       fit_intercept=False, tol=1e-4, n_jobs=n_jobs)
+#     # reg_las = Lasso( alpha=1e-2,fit_intercept=True, tol = 1e-6,max_iter=1000)
+#
+#     reg_las.fit(H, p)
+#     q_las = reg_las.coef_[:n_plwav] + 1j * reg_las.coef_[n_plwav:]
+#     try:
+#         alpha_lass = reg_las.alpha_
+#     except:
+#         alpha_lass = None
+#         pass
+#     return q_las, alpha_lass
 
 
 """ Transfer matrices """
@@ -632,17 +635,30 @@ def fib_sphere(num_points, radius=1):
     # plt.show()
     return [x_batch, y_batch, z_batch]
 
+def sample_circle(n_samples = 1200, radius = 1., z = 0.):
+    angle = np.pi * np.linspace(0, 2., n_samples) - np.pi
 
-def wavenumber(f, n_PW, c=343):
+    x = radius * np.cos(angle)
+    y = radius * np.sin(angle)
+    z = z*np.ones_like(x)
+    return np.stack([x, y, z])
+
+
+def wavenumber(f, n_PW, c=343, two_dim = True):
     k = 2 * np.pi * f / c
-    k_grid = fib_sphere(n_PW, k)
+    if two_dim:
+        k_grid = sample_circle(n_PW, k)
+    else:
+        k_grid = fib_sphere(n_PW, k)
     return k_grid
 
 
-def plane_wave_sensing_matrix(f, sensor_grid, n_pw=1600, k_samp=None, c=343., normalise=False):
+def plane_wave_sensing_matrix(f, sensor_grid, n_pw=1600, k_samp=None, c=343., normalise=False, 
+                              two_dim = False):
     # Basis functions for coefficients
     if k_samp is None:
-        k_samp = wavenumber(f, n_pw, c=c)
+        k_samp = wavenumber(f, n_pw, c=c,
+                            two_dim = two_dim)
     kx, ky, kz = k_samp
     if np.ndim(kx) < 2:
         kx = np.expand_dims(kx, 0)
@@ -671,24 +687,25 @@ def build_sensing_mat(k_sampled, sensor_grid):
 """ Hierarchical Bayes """
 
 def run_mcmc(model, data_dict, num_posterior_samples = 1000, num_warmup = None, num_chains = 2,
-             platform = 'cpu',thinning= 3 ):
-    numpyro.set_platform(platform)
+             thinning= 3 ):
+    # numpyro.set_platform(platform)
     print(xla_bridge.get_backend().platform)
     # coefficients = np.zeros((nfreqs, num_posterior_samples * num_chains,
     #                          data_dict['H'].shape[-1]), dtype="complex")
     mcmc_dict = dict(H=data_dict["H"], pm= data_dict["pm"])
     if num_warmup is None:
         num_warmup = int(num_posterior_samples / 2)
-    rng_key = jrandom.PRNGKey(0)
+    rng_key = jrandom.PRNGKey(42)
     rng_key, rng_key_ = jrandom.split(rng_key)
-    my_kernel = NUTS(model, max_tree_depth= 10)
+    my_kernel = NUTS(model, max_tree_depth= 10, target_accept_prob=0.8)
     posterior = MCMC(
         my_kernel,
-        thinning= 3,
+        thinning= thinning,
         num_samples=num_posterior_samples,
         num_warmup= num_warmup,
         num_chains=num_chains,
-        progress_bar=True
+        progress_bar=True,
+        # chain_method= 'vectorized'
     )
     posterior.run(
         rng_key_,
@@ -707,7 +724,12 @@ def hierarchical_model(data):
     N = A.shape[1]
     M = y.shape[0]
 
-    sigma = numpyro.sample("sigma", dist.HalfCauchy(jnp.ones(M)))
+    # sigma = numpyro.sample("sigma", dist.HalfCauchy(jnp.ones(M)))
+
+    prec_obs = numpyro.sample("prec_obs", dist.Gamma(3.0, 1.0))
+    sigma = 1.0 / jnp.sqrt(prec_obs)
+
+
     tau_r = numpyro.sample("tau_r", dist.InverseGamma(concentration=3 * jnp.ones(N), rate=jnp.ones(N)))
     tau_im = numpyro.sample("tau_im", dist.InverseGamma(concentration=3 * jnp.ones(N), rate=jnp.ones(N)))
     b_real = numpyro.sample("beta_real", dist.Normal(jnp.zeros(N), tau_r))
@@ -731,29 +753,33 @@ def sparse_hierarchical_model(data):
     y = jnp.asarray(data["pm"])
     N = H.shape[1]
     M = y.shape[0]
-    m = 250.
+    m = 1000.
     sigma_0 = 2
     tau_0 = m / (H.shape[1] - m) * sigma_0 / jnp.sqrt(H.shape[0])
 
     # Each coefficient β_i is modelled as a normal distribution with a variance of λ_i, τ
     # Tau_r = numpyro.sample('tau_r', dist.HalfCauchy(scale=tau_0*jnp.ones(1)))
-    Tau = numpyro.sample('tau', dist.HalfCauchy(scale=tau_0*jnp.ones(1)))
+    Tau = numpyro.sample('tau',  dist.HalfCauchy(scale=tau_0 *jnp.ones(1)))
     Lambda_r = numpyro.sample('lambda_r', dist.HalfCauchy(scale=jnp.ones(N)))
     # Tau_im = numpyro.sample('tau_im', dist.HalfCauchy(scale=tau_0*jnp.ones(1)))
     Lambda_im = numpyro.sample('lambda_im', dist.HalfCauchy(scale=jnp.ones(N)))
 
     # note that this reparameterization (i.e. coordinate transformation) improves
     # posterior geometry and makes NUTS sampling more efficient
-    # unscaled_hs_sigmas_im = numpyro.sample("unscaled_hs_sigma_im", dist.Normal(0.0, jnp.ones(N)))
-    # unscaled_hs_sigmas_re = numpyro.sample("unscaled_hs_sigma_re", dist.Normal(0.0, jnp.ones(N)))
-    # horseshoe_sigma_r = Tau_r * Lambda_r * unscaled_hs_sigmas_re
-    # horseshoe_sigma_im = Tau_im * Lambda_im * unscaled_hs_sigmas_im
+    unscaled_hs_beta_im = numpyro.sample("unscaled_hs_sigma_im", dist.Normal(0.0, jnp.ones(N)))
+    unscaled_hs_beta_re = numpyro.sample("unscaled_hs_sigma_re", dist.Normal(0.0, jnp.ones(N)))
+    horseshoe_sigma_r = Tau * Lambda_r * unscaled_hs_beta_re
+    horseshoe_sigma_im = Tau * Lambda_im * unscaled_hs_beta_im
 
-    horseshoe_sigma_r = Tau **2 * Lambda_r **2
-    horseshoe_sigma_im = Tau **2 * Lambda_im **2
+    # horseshoe_sigma_r = Tau **2 * Lambda_r **2
+    # horseshoe_sigma_im = Tau **2 * Lambda_im **2
+    # horseshoe_sigma_r = Tau * Lambda_r
+    # horseshoe_sigma_im = Tau * Lambda_im
+    b_real = numpyro.deterministic("beta_real", horseshoe_sigma_r)
+    b_imag = numpyro.deterministic("beta_imag", horseshoe_sigma_im)
 
-    b_real = numpyro.sample('beta_real', dist.Normal(loc=jnp.zeros(N), scale=horseshoe_sigma_r))
-    b_imag = numpyro.sample('beta_imag', dist.Normal(loc=jnp.zeros(N), scale=horseshoe_sigma_im))
+    # b_real = numpyro.sample('beta_real', dist.Normal(loc=jnp.zeros(N), scale=scaled_sigma_r))
+    # b_imag = numpyro.sample('beta_imag', dist.Normal(loc=jnp.zeros(N), scale=scaled_sigma_im))
 
     sigma = numpyro.sample("sigma", dist.HalfNormal( sigma_0*jnp.ones(M) ))
 
@@ -775,8 +801,8 @@ def bayesian_lasso(data):
 
     sigma = numpyro.sample("sigma", dist.HalfNormal(2*jnp.ones(M)))
 
-    tau_r = numpyro.sample('tau_r', dist.InverseGamma(concentration=3 * jnp.ones(N), rate=jnp.ones(N)))
-    tau_i = numpyro.sample('tau_i', dist.InverseGamma(concentration=3 * jnp.ones(N), rate=jnp.ones(N)))
+    tau_r = numpyro.sample('tau_r', dist.InverseGamma(concentration=2 * jnp.ones(N), rate=jnp.ones(N)))
+    tau_i = numpyro.sample('tau_i', dist.InverseGamma(concentration=2 * jnp.ones(N), rate=jnp.ones(N)))
     # b_real = numpyro.sample('beta_real', dist.Laplace(loc=jnp.zeros(N), scale=tau_r))
     # b_imag = numpyro.sample('beta_imag', dist.Laplace(loc=jnp.zeros(N), scale=tau_i))
     b_real = numpyro.sample('beta_real', dist.Laplace(loc=jnp.zeros(N), scale=tau_r))
@@ -790,25 +816,25 @@ def bayesian_lasso(data):
     numpyro.sample("y_real", dist.Normal(mu_real, sigma), obs=y.real)
     numpyro.sample("y_imag", dist.Normal(mu_imag, sigma), obs=y.imag)
 
-def horshoe_prior(data):
-    m = 500,
-    ss = 3,
-    dof = 25,
-    H = jnp.asarray(data["H"])
-    y = jnp.asarray(data["pm"])
-    N = H.shape[1]
-    M = y.shape[0]
-    sigma_0 = 2
-    sigma = numpyro.sample("sigma", dist.HalfNormal(sigma_0*jnp.ones(M)))
-    tau_0 = m / (H.shape[1] - m) * sigma_0 / jnp.sqrt(H.shape[0])
-    tau = numpyro.sample("tau", dist.HalfCauchy(tau_0))
-
-    c2 = numpyro.sample("c2",dist.InverseGamma('c2', dof / 2, dof / 2 * ss ** 2))
-    lam = pm.HalfCauchy('lam', 1, shape=X.shape[1])
-
-    l1 = lam * tt.sqrt(c2)
-    l2 = tt.sqrt(c2 + tau * tau * lam * lam)
-    lam_d = l1 / l2
+# def horshoe_prior(data):
+#     m = 500,
+#     ss = 3,
+#     dof = 25,
+#     H = jnp.asarray(data["H"])
+#     y = jnp.asarray(data["pm"])
+#     N = H.shape[1]
+#     M = y.shape[0]
+#     sigma_0 = 2
+#     sigma = numpyro.sample("sigma", dist.HalfNormal(sigma_0*jnp.ones(M)))
+#     tau_0 = m / (H.shape[1] - m) * sigma_0 / jnp.sqrt(H.shape[0])
+#     tau = numpyro.sample("tau", dist.HalfCauchy(tau_0))
+#
+#     c2 = numpyro.sample("c2",dist.InverseGamma('c2', dof / 2, dof / 2 * ss ** 2))
+#     lam = pm.HalfCauchy('lam', 1, shape=X.shape[1])
+#
+#     l1 = lam * tt.sqrt(c2)
+#     l2 = tt.sqrt(c2 + tau * tau * lam * lam)
+#     lam_d = l1 / l2
 
 
 # %%
@@ -831,8 +857,8 @@ def horshoe_prior(data):
 @click.option(
     "--normalisation",
     default='nothing',
-    type= click.Choice(['standardize', 'maxabs', 'nothing'], case_sensitive=False),
-    help="Standardize measurement data with global mean and std, normalize with inf norm (f \in [-1, 1])"
+    type= click.Choice(['standardise', 'unitnorm', 'nothing'], case_sensitive=False),
+    help="standardise measurement data with global mean and std, normalize with inf norm (f \in [-1, 1])"
          " or dont do anything"
 )
 @click.option(
@@ -849,245 +875,111 @@ def horshoe_prior(data):
     help="When 'reconstruction_index' is not in use, then reconstruct at this frequency"
 )
 
-def run_experiment(data_dir, save_dir, reconstruction_method, normalisation, reconstruction_index, reconstruction_freq):
-    filename = './Data/SoundFieldControlPlanarDataset.h5'
+def run_experiment(data_dir, save_dir = './Reconstructions', reconstruction_method = 'ridge', normalisation = 'unitnorm',
+                   reconstruction_index = 0, reconstruction_freq = None,
+                   number_of_plane_waves = 1800):
+    filename = data_dir + '/SoundFieldControlPlanarDataset.h5'
     pref, fs, grid, pm, grid_measured, noise, f_vec, c = get_measurement_vectors(filename=filename, frequency_domain=False)
 
     taps = pref.shape[-1]
     noise = noise[:, :taps]
 
-    # plt.magnitude_spectrum(noise.mean(0), Fs=8000, scale='dB')
-    # plt.magnitude_spectrum(pref.mean(0), Fs=8000, scale='dB')
-    # plt.xlim([0, 5000])
-    # plt.show()
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
     f_vec = np.fft.rfftfreq(pref.shape[-1], d=1 / fs)
-    Pref = np.fft.rfft(pref)
+    # Pref = np.fft.rfft(pref)
     Pm = np.fft.rfft(pm)
     Noise = np.fft.rfft(noise, n=pm.shape[-1])
 
-    f = 500.
-    f_ind = np.argmin(f_vec <= f)
+    if reconstruction_index == -1:
+        if reconstruction_freq is None:
+            raise SystemExit('You must set a reconstruction frequency when "reconstruction_index" is set to -1.')
+        f_ind = np.argmin(f_vec <= reconstruction_freq)
+    else:
+        f_ind = reconstruction_index
     f = f_vec[f_ind]
 
-    H, k = plane_wave_sensing_matrix(f, n_pw=1800,
+    H, k = plane_wave_sensing_matrix(f, n_pw=number_of_plane_waves,
                                      sensor_grid=grid_measured,
                                      c=c, normalise=False)
 
     Href, _ = plane_wave_sensing_matrix(f,
                                         k_samp=k,
-                                        n_pw=1800,
+                                        n_pw=number_of_plane_waves,
                                         sensor_grid=grid,
                                         c=c, normalise=False)
 
-
-
-    # Pm_ff, mu_P, scale_P = standardize(Pm[:, f_ind])
+    # Pm_ff, mu_P, scale_P = standardise(Pm[:, f_ind])
     # Pref_ff, mu_Pref, scale_Pref = scale_maxabs(Pm[:, f_ind])
+    Noise_estimate = Noise[:, f_ind]
 
-    Pm_ff = Pm[:, f_ind]/3
+    if normalisation == 'standardise':
+        Pm_ff, mu_P, scale_P = standardise(Pm[:, f_ind])
+        Noise_estimate = (Noise_estimate - Noise_estimate.mean())/scale_P
+    elif normalisation == 'unitnorm':
+        Pm_ff, norm = normalise(Pm[:, f_ind])
+        Noise_estimate /= norm
+    else:
+        Pm_ff = Pm[:, f_ind]
     data_dict = {
         "f":f,
         "H" : H,
-        "pm" : Pm_ff
+        "pm" : Pm_ff,
+        "epsilon" : Noise_estimate
 
     }
+    print(80*'-')
+    print(f"Using {reconstruction_method} to reconstruct pressure at f = {np.round(f,2)} Hz with {Pm_ff.shape} sensors")
+    print(80*'-')
+    if reconstruction_method == 'ridge':
+        start_ridge = time.time()
+        coeffs, alpha_ridge = Ridge_regression(H, Pm_ff)
+        end_ridge = time.time()
+        elapsed_time_ridge = time.strftime("%Mm %Ss", time.gmtime(end_ridge - start_ridge ))
+    elif reconstruction_method == 'normal bayes':
+        start_bayes = time.time()
+        coeffs_post, posterior = run_mcmc(hierarchical_model, data_dict=data_dict
+                                     , num_chains=2, num_posterior_samples=1000)
+        end_bayes = time.time()
+        elapsed_time_normal = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes))
+        print("MCMC took ", elapsed_time_normal)
+        
+        coeffs = coeffs_post.mean(axis = -1)
+    elif reconstruction_method == 'bayesian lasso':
+        start_bayes = time.time()
+        coeffs_post, posterior = run_mcmc(bayesian_lasso, data_dict=data_dict
+                                       , num_chains=2, num_posterior_samples=1000)
+        end_bayes = time.time()
+        elapsed_time_lasso = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes))
+        print("MCMC took ", elapsed_time_lasso)
+        
+        coeffs = coeffs_post.mean(axis = -1)
+    elif reconstruction_method == 'sparse bayes':
+        start_bayes = time.time()
+        coeffs_post, posterior = run_mcmc(sparse_hierarchical_model, data_dict=data_dict
+                                       , num_chains=2, num_posterior_samples=1000,
+                                       platform='gpu')
+        end_bayes = time.time()
+        elapsed_time_sparse = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes))
 
-    coeffs_lstsq  = np.linalg.lstsq(H, Pm[:, f_ind], rcond= True)[0]
+        print("MCMC took ", elapsed_time_sparse)
+        
+        coeffs = coeffs_post.mean(axis = -1)
+    elif reconstruction_method == 'lasso':
+        start_ridge = time.time()
+        coeffs =  lasso_cvx_cmplx(H, Pm_ff, Noise_var= abs(data_dict["epsilon"]).mean())
+        end_ridge = time.time()
+        elapsed_time_ridge = time.strftime("%Mm %Ss", time.gmtime(end_ridge - start_ridge ))
+        print("Took ", elapsed_time_ridge)
 
-    start_ridge = time.time()
+    Phat = Href.dot(coeffs)
+    if normalisation == 'standardise':
+        Phat = rescale(Phat, mu_P, scale_P)
+    elif normalisation == 'unitnorm':
+        Phat *= norm
 
-    coeffs_ridge, alpha_ridge = Ridge_regression(H, Pm[:, f_ind]/3)
-    end_ridge = time.time()
+    np.savez(save_dir + f"/reconstructed_pressure_partion_n_{reconstruction_index}", Phat)
 
-    elapsed_time_ridge = time.strftime("%Mm %Ss", time.gmtime(end_ridge - start_ridge ))
-
-    print("Took ", elapsed_time_ridge)
-
-
-    start_bayes = time.time()
-    coeffs, posterior = run_mcmc(hierarchical_model, data_dict= data_dict
-                                 , num_chains=2,  num_posterior_samples = 1500)
-    end_bayes = time.time()
-    elapsed_time_normal = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-    print("MCMC took ", elapsed_time_normal)
-
-    start_bayes = time.time()
-    coeffs2, posterior2 = run_mcmc(bayesian_lasso, data_dict= data_dict
-                                 , num_chains=1, num_posterior_samples = 1500)
-    end_bayes = time.time()
-    elapsed_time_lasso = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-    print("MCMC took ", elapsed_time_lasso)
-
-    start_bayes = time.time()
-    coeffs2, posterior2 = run_mcmc(sparse_hierarchical_model, data_dict= data_dict
-                                 , num_chains=2, num_posterior_samples = 1500)
-    end_bayes = time.time()
-    elapsed_time_sparse = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-
-    print("MCMC took ", elapsed_time_sparse)
-    # p_post = Href.dot(coeffs.T)
-    # p_post2 = Href.dot(coeffs2.T)
-    p_ridge = Href.dot(coeffs_ridge)
-    # p_ridge = rescale(p_ridge, mu_P, scale_P)
-    # p_post2 = rescale(p_post2, mu_P, scale_P)
-    # p_post = rescale(p_post, mu_P, scale_P)
-    # print("Posterior samples: {}, time: {:.4f}, error: {:.5f}".format(coeffs.shape[0], -(start_bayes - end_bayes),
-    #                                                                   nmse(Pref[:, f_ind], p_post.mean(axis =-1))))
-
-
-    # print("Posterior samples: {}, time: {:.4f}, error: {:.5f}".format(coeffs2.shape[0], -(start_bayes - end_bayes),
-    #                                                                   nmse(Pref[:, f_ind], p_post2.mean(axis =-1))))
-    print("Posterior samples: {}, time: {}, error: {:.5f}".format(p_ridge.shape[0], elapsed_time_ridge,
-                                                                      nmse(Pref[:, f_ind]/3, p_ridge)))
-
-    plims = [Pref[:, f_ind].real.min(), Pref[:, f_ind].real.max()]
-
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 3, 1)
-    ax, _ = plot_sf(Pref[:, f_ind]/3, grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-    ax.set_title('truth')
-    ax = fig.add_subplot(1, 3, 2)
-    ax, _ = plot_sf(p_ridge, grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-    ax.set_title('MAP - Normal Prior')
-    ax = fig.add_subplot(1, 3, 3)
-    # ax, _ = plot_sf(p_post2.mean(axis =-1), grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-    # ax.set_title('MAP - Laplace Prior')
-    fig.tight_layout()
-    fig.show()
-
-    stdlims = [p_post.std(axis =-1).min(), p_post.std(axis =-1).max()]
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 2, 1)
-    ax, im = plot_sf(p_post.std(axis =-1), grid[0], grid[1], ax=ax, cmap = 'bone', normalise = False, clim= stdlims)
-    ax.set_title('std - Normal Prior')
-    ax = fig.add_subplot(1, 2, 2)
-    ax, _ = plot_sf(p_post2.std(axis =-1), grid[0], grid[1], ax=ax, cmap = 'bone', normalise = False, clim= stdlims)
-    ax.set_title('std - Laplace Prior')
-    fig.colorbar(im)
-    fig.tight_layout()
-    fig.show()
-# %%
-filename = './Data/SoundFieldControlPlanarDataset.h5'
-pref, fs, grid, pm, grid_measured, noise, f_vec, c = get_measurement_vectors(filename=filename, frequency_domain=False)
-
-taps = pref.shape[-1]
-noise = noise[:, :taps]
-
-# plt.magnitude_spectrum(noise.mean(0), Fs=8000, scale='dB')
-# plt.magnitude_spectrum(pref.mean(0), Fs=8000, scale='dB')
-# plt.xlim([0, 5000])
-# plt.show()
-
-f_vec = np.fft.rfftfreq(pref.shape[-1], d=1 / fs)
-Pref = np.fft.rfft(pref)
-Pm = np.fft.rfft(pm)
-Noise = np.fft.rfft(noise, n=pm.shape[-1])
-# %%
-f = 500.
-f_ind = np.argmin(f_vec <= f)
-f = f_vec[f_ind]
-
-H, k = plane_wave_sensing_matrix(f, n_pw=1400,
-                                 sensor_grid=grid_measured,
-                                 c=c, normalise=False)
-
-Href, _ = plane_wave_sensing_matrix(f,
-                                    k_samp=k,
-                                    n_pw=1400,
-                                    sensor_grid=grid,
-                                    c=c, normalise=False)
-
-# %%
-
-# Pm_ff, mu_P, scale_P = standardize(Pm[:, f_ind])
-# Pref_ff, mu_Pref, scale_Pref = scale_maxabs(Pm[:, f_ind])
-
-Pm_ff, norm = normalise(Pm[:, f_ind])
-data_dict = {
-    "f":f,
-    "H" : H,
-    "pm" : Pm_ff
-
-}
-
-coeffs_lstsq  = np.linalg.lstsq(H, Pm_ff, rcond= True)[0]
-# %%
-start_ridge = time.time()
-
-coeffs_ridge, alpha_ridge = Ridge_regression(H, Pm[:, f_ind])
-end_ridge = time.time()
-
-elapsed_time_ridge = time.strftime("%Mm %Ss", time.gmtime(end_ridge - start_ridge ))
-
-print("Took ", elapsed_time_ridge)
-# %%
-
-start_bayes = time.time()
-coeffs, posterior = run_mcmc(hierarchical_model, data_dict= data_dict
-                             , num_chains=2,  num_posterior_samples = 1500)
-end_bayes = time.time()
-elapsed_time_normal = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-print("MCMC took ", elapsed_time_normal)
-
-#%%
-start_bayes = time.time()
-coeffs2, posterior2 = run_mcmc(bayesian_lasso, data_dict= data_dict
-                             , num_chains=2, num_posterior_samples = 3000)
-end_bayes = time.time()
-elapsed_time_lasso = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-print("MCMC took ", elapsed_time_lasso)
-
-#%%
-start_bayes = time.time()
-coeffs2, posterior2 = run_mcmc(sparse_hierarchical_model, data_dict= data_dict
-                             , num_chains=2, num_posterior_samples = 3000)
-end_bayes = time.time()
-elapsed_time_sparse = time.strftime("%Mm %Ss", time.gmtime(end_bayes - start_bayes ))
-
-print("MCMC took ", elapsed_time_sparse)
-
-#%%
-# p_post = Href.dot(coeffs.T)
-p_post2 = Href.dot(coeffs2.T)*norm
-p_ridge = Href.dot(coeffs_ridge)
-# p_ridge = rescale(p_ridge, mu_P, scale_P)
-# p_post2 = rescale(p_post2, mu_P, scale_P)
-# p_post = rescale(p_post, mu_P, scale_P)
-#%%
-# print("Posterior samples: {}, time: {:.4f}, error: {:.5f}".format(coeffs.shape[0], -(start_bayes - end_bayes),
-#                                                                   nmse(Pref[:, f_ind], p_post.mean(axis =-1))))
-
-
-print("Sparse Posterior samples: {}, time: {:.4f}, error: {:.5f}".format(coeffs2.shape[0], -(start_bayes - end_bayes),
-                                                                  nmse(Pref[:, f_ind], p_post2.mean(axis =-1))))
-print("Ridge samples: {}, time: {}, error: {:.5f}".format(p_ridge.shape[0], elapsed_time_ridge,
-                                                                  nmse(Pref[:, f_ind], p_ridge)))
-# %%
-
-plims = [Pref[:, f_ind].real.min(), Pref[:, f_ind].real.max()]
-
-fig = plt.figure()
-ax = fig.add_subplot(1, 3, 1)
-ax, _ = plot_sf(Pref[:, f_ind].imag, grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-ax.set_title('truth')
-ax = fig.add_subplot(1, 3, 2)
-ax, _ = plot_sf(p_ridge.imag, grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-ax.set_title('MAP - Normal Prior')
-ax = fig.add_subplot(1, 3, 3)
-ax, _ = plot_sf(p_post2.mean(axis =-1).imag, grid[0], grid[1], ax=ax, clim = plims, normalise= False)
-ax.set_title('MAP - Laplace Prior')
-fig.tight_layout()
-fig.show()
-# %%
-stdlims = [p_post.std(axis =-1).min(), p_post.std(axis =-1).max()]
-fig = plt.figure()
-ax = fig.add_subplot(1, 2, 1)
-ax, im = plot_sf(p_post.std(axis =-1), grid[0], grid[1], ax=ax, cmap = 'bone', normalise = False, clim= stdlims)
-ax.set_title('std - Normal Prior')
-ax = fig.add_subplot(1, 2, 2)
-ax, _ = plot_sf(p_post2.std(axis =-1), grid[0], grid[1], ax=ax, cmap = 'bone', normalise = False, clim= stdlims)
-ax.set_title('std - Laplace Prior')
-fig.colorbar(im)
-fig.tight_layout()
-fig.show()
+if __name__ == '__main__':
+    run_experiment()
